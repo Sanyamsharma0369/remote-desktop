@@ -1,0 +1,57 @@
+/* Connection Stats Panel Styles */
+#connectionStats {
+  position: absolute;
+  top: 24px;
+  right: 32px;
+  min-width: 200px;
+  background: rgba(20,30,50,0.92);
+  border-radius: 12px;
+  padding: 16px 22px 16px 18px;
+  color: #2d8cf0;
+  font-size: 1.05em;
+  white-space: pre;
+  z-index: 10;
+  box-shadow: 0 2px 16px #23294655;
+  text-align: left;
+  font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
+  transition: box-shadow 0.2s;
+}
+#connectionStats:hover {
+  box-shadow: 0 4px 32px #2d8cf099;
+}
+#connectionStats .stats-icon {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  font-size: 1.1em;
+}
+#connectionStats .close-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: #ff4d4f;
+  font-size: 1.2em;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+#connectionStats .close-btn:hover {
+  opacity: 1;
+}
+#connectionStats .minimize-btn {
+  position: absolute;
+  top: 6px;
+  right: 32px;
+  background: none;
+  border: none;
+  color: #2d8cf0;
+  font-size: 1.2em;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+#connectionStats .minimize-btn:hover {
+  opacity: 1;
+} 

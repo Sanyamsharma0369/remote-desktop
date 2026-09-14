@@ -1,0 +1,58 @@
+# deploy/Caddyfile
+# ─────────────────────────────────────────────────────────────────────────────
+# Caddy reverse proxy for Remote Desktop (production HTTPS)
+#
+# Usage:
+#   1. Replace {$DOMAIN} with your real domain, e.g. rd.example.com
+#   2. Make sure your DNS A record points to this server
+#   3. Run: caddy run --config Caddyfile
+#
+# Internal port 9005 is NEVER exposed publicly — only Caddy is on :443.
+# ─────────────────────────────────────────────────────────────────────────────
+
+{$DOMAIN} {
+
+    # ── Automatic TLS via Let's Encrypt ──────────────────────────────────
+    tls {
+        # Caddy handles ACME automatically. Add your email for account reg:
+        # email your@email.com
+    }
+
+    # ── Reverse proxy to FastAPI ──────────────────────────────────────────
+    reverse_proxy 127.0.0.1:9005 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # WebSocket upgrade support
+        transport http {
+            tls_insecure_skip_verify false
+            read_timeout  3600s
+            write_timeout 3600s
+        }
+    }
+
+    # ── HTTP → HTTPS redirect (Caddy handles this automatically) ─────────
+
+    # ── Security headers (supplement app-level headers) ──────────────────
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+
+        # Remove server fingerprinting
+        -Server
+        -X-Powered-By
+    }
+
+    # ── Block internal/debug routes in production ─────────────────────────
+    @blocked {
+        path /docs /redoc /openapi.json
+    }
+    respond @blocked 404
+}
+
+# ── HTTP port 80 redirect (Caddy default, explicit for clarity) ───────────
+http://{$DOMAIN} {
+    redir https://{$DOMAIN}{uri} permanent
+}

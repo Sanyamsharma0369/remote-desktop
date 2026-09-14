@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login — Remote Desktop</title>
+    <meta name="description" content="Sign in to your Remote Desktop dashboard to access and control your devices remotely.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: rgba(15, 20, 40, 0.65);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-purple: #8b5cf6;
+            --accent-green: #10b981;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --input-bg: rgba(15, 23, 42, 0.7);
+            --input-border: rgba(148, 163, 184, 0.15);
+            --input-focus: rgba(59, 130, 246, 0.4);
+            --error-red: #ef4444;
+            --shadow-glow: 0 0 60px rgba(59, 130, 246, 0.15);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Animated gradient background */
+        .bg-gradient {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(59, 130, 246, 0.12) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse at 60% 80%, rgba(6, 182, 212, 0.08) 0%, transparent 50%);
+            animation: gradientShift 12s ease-in-out infinite alternate;
+            z-index: 0;
+        }
+
+        @keyframes gradientShift {
+            0% { transform: scale(1) rotate(0deg); opacity: 1; }
+            50% { transform: scale(1.05) rotate(1deg); opacity: 0.9; }
+            100% { transform: scale(1) rotate(-1deg); opacity: 1; }
+        }
+
+        /* Grid pattern overlay */
+        .bg-grid {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 60px 60px;
+            z-index: 0;
+        }
+
+        /* Floating particles */
+        .particles {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .particle {
+            position: absolute;
+            border-radius: 50%;
+            animation: floatParticle linear infinite;
+            opacity: 0;
+        }
+
+        @keyframes floatParticle {
+            0% { transform: translateY(100vh) scale(0); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+        }
+
+        /* Navbar */
+        .navbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 64px;
+            background: rgba(10, 14, 26, 0.8);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            padding: 0 32px;
+            z-index: 100;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 40px; height: 40px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 16px;
+            color: #fff;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .logo:hover .logo-icon {
+            transform: scale(1.08) rotate(-3deg);
+            box-shadow: 0 6px 25px rgba(59, 130, 246, 0.4);
+        }
+
+        .logo-text {
+            font-size: 1.3em;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--text-primary), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 0.5px;
+        }
+
+        /* Main container */
+        .login-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 80px 24px 24px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Login card */
+        .login-card {
+            width: 100%;
+            max-width: 420px;
+            background: var(--bg-card);
+            backdrop-filter: blur(40px) saturate(180%);
+            -webkit-backdrop-filter: blur(40px) saturate(180%);
+            border: 1px solid var(--border-glass);
+            border-radius: 24px;
+            padding: 48px 40px;
+            box-shadow: var(--shadow-glow), 0 25px 50px rgba(0,0,0,0.4);
+            animation: cardAppear 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            opacity: 0;
+            transform: translateY(30px);
+        }
+
+        @keyframes cardAppear {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .card-header {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+
+        .card-header .icon-wrapper {
+            width: 64px; height: 64px;
+            margin: 0 auto 20px;
+            background: linear-gradient(135deg, rgba(59,130,246,0.2), rgba(139,92,246,0.2));
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(59,130,246,0.15);
+            animation: iconPulse 3s ease-in-out infinite;
+        }
+
+        @keyframes iconPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.1); }
+            50% { box-shadow: 0 0 0 12px rgba(59,130,246,0); }
+        }
+
+        .card-header .icon-wrapper svg {
+            width: 32px; height: 32px;
+        }
+
+        .card-header h1 {
+            font-size: 1.75em;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.02em;
+            margin-bottom: 8px;
+        }
+
+        .card-header p {
+            color: var(--text-secondary);
+            font-size: 0.95em;
+            font-weight: 400;
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        .input-wrapper {
+            position: relative;
+        }
+
+        .input-wrapper .input-icon {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px; height: 20px;
+            color: var(--text-muted);
+            pointer-events: none;
+            transition: color 0.3s ease;
+        }
+
+        .input-wrapper input {
+            width: 100%;
+            padding: 14px 16px 14px 48px;
+            background: var(--input-bg);
+            border: 1.5px solid var(--input-border);
+            border-radius: 14px;
+            color: var(--text-primary);
+            font-size: 0.95em;
+            font-family: 'Inter', sans-serif;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .input-wrapper input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .input-wrapper input:focus {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 4px var(--input-focus), 0 0 20px rgba(59,130,246,0.1);
+            background: rgba(15, 23, 42, 0.9);
+        }
+
+        .input-wrapper input:focus ~ .input-icon {
+            color: var(--accent-blue);
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            transition: color 0.2s;
+        }
+
+        .password-toggle:hover {
+            color: var(--text-primary);
+        }
+
+        /* Error message */
+        .error-msg {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            border-radius: 12px;
+            padding: 12px 16px;
+            text-align: center;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+            display: none;
+            animation: errorShake 0.4s ease;
+        }
+
+        @keyframes errorShake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-6px); }
+            75% { transform: translateX(6px); }
+        }
+
+        /* Submit button */
+        .btn-submit {
+            width: 100%;
+            padding: 15px 24px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border: none;
+            border-radius: 14px;
+            color: #fff;
+            font-size: 1em;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            letter-spacing: 0.02em;
+        }
+
+        .btn-submit::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(59, 130, 246, 0.4);
+        }
+
+        .btn-submit:hover::before {
+            left: 100%;
+        }
+
+        .btn-submit:active {
+            transform: translateY(0);
+        }
+
+        .btn-submit.loading {
+            pointer-events: none;
+            opacity: 0.8;
+        }
+
+        .btn-submit .spinner {
+            display: none;
+            width: 20px; height: 20px;
+            border: 2.5px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto;
+        }
+
+        .btn-submit.loading .btn-text { display: none; }
+        .btn-submit.loading .spinner { display: inline-block; }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Footer link */
+        .card-footer {
+            text-align: center;
+            margin-top: 28px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-glass);
+        }
+
+        .card-footer a {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .card-footer a span {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .card-footer a:hover {
+            color: var(--text-primary);
+        }
+
+        .card-footer a:hover span {
+            text-decoration: underline;
+        }
+
+        /* Responsive */
+        @media (max-width: 480px) {
+            .login-card {
+                padding: 36px 24px;
+                border-radius: 20px;
+            }
+            .navbar { padding: 0 20px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="bg-gradient"></div>
+<div class="bg-grid"></div>
+<div class="particles" id="particles"></div>
+
+<nav class="navbar">
+    <a href="/" class="logo">
+        <div class="logo-icon">RD</div>
+        <span class="logo-text">Remote Desktop</span>
+    </a>
+</nav>
+
+<div class="login-container">
+    <div class="login-card">
+        <div class="card-header">
+            <div class="icon-wrapper">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-blue);">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    <circle cx="12" cy="16" r="1"/>
+                </svg>
+            </div>
+            <h1>Welcome back</h1>
+            <p>Sign in to your account to continue</p>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <form id="loginForm" autocomplete="off">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <div class="input-wrapper">
+                    <input type="text" id="username" name="username" placeholder="Enter your username" required autofocus>
+                    <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                        <circle cx="12" cy="7" r="4"/>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <div class="input-wrapper">
+                    <input type="password" id="password" name="password" placeholder="Enter your password" required>
+                    <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                    <button type="button" class="password-toggle" id="togglePassword" tabindex="-1" aria-label="Toggle password visibility">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit" id="submitBtn">
+                <span class="btn-text">Sign In</span>
+                <span class="spinner"></span>
+            </button>
+        </form>
+
+        <div class="card-footer">
+            <a href="/register">Don't have an account? <span>Create one</span></a>
+        </div>
+    </div>
+</div>
+
+<script>
+// Particles
+(function() {
+    const container = document.getElementById('particles');
+    const colors = ['rgba(59,130,246,0.3)', 'rgba(139,92,246,0.3)', 'rgba(6,182,212,0.3)', 'rgba(16,185,129,0.25)'];
+    for (let i = 0; i < 30; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const size = Math.random() * 4 + 1;
+        p.style.cssText = `
+            width: ${size}px; height: ${size}px;
+            left: ${Math.random() * 100}%;
+            background: ${colors[Math.floor(Math.random() * colors.length)]};
+            animation-duration: ${Math.random() * 15 + 10}s;
+            animation-delay: ${Math.random() * 10}s;
+        `;
+        container.appendChild(p);
+    }
+})();
+
+// Password toggle
+document.getElementById('togglePassword').addEventListener('click', function() {
+    const pwd = document.getElementById('password');
+    const isPassword = pwd.type === 'password';
+    pwd.type = isPassword ? 'text' : 'password';
+    this.querySelector('svg').innerHTML = isPassword
+        ? '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+        : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+});
+
+// Login form
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+    const errorMsg = document.getElementById('errorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+
+    errorMsg.style.display = 'none';
+    submitBtn.classList.add('loading');
+
+    try {
+        const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',   // receive HttpOnly refresh cookie
+            body: JSON.stringify({ username, password })
+        });
+        if (res.status === 429) {
+            errorMsg.textContent = 'Too many login attempts. Please wait a minute.';
+            errorMsg.style.display = 'block';
+            submitBtn.classList.remove('loading');
+            return;
+        }
+        const data = await res.json();
+        if (res.ok && data.access_token) {
+            // Store access token in memory via localStorage (dev compat).
+            // In production the refresh cookie is HttpOnly — no JS access.
+            localStorage.setItem('token', data.access_token);
+            window.location.href = '/dashboard';
+        } else {
+            errorMsg.textContent = data.detail || 'Invalid credentials';
+            errorMsg.style.display = 'block';
+            submitBtn.classList.remove('loading');
+        }
+    } catch (err) {
+        errorMsg.textContent = 'Connection failed. Please try again.';
+        errorMsg.style.display = 'block';
+        submitBtn.classList.remove('loading');
+    }
+});
+</script>
+</body>
+</html>

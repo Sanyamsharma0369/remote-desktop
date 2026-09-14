@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Remote Desktop — Secure Remote Access</title>
+    <meta name="description" content="Remote Desktop — Securely connect, control, and manage your devices from anywhere.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: rgba(15, 20, 40, 0.5);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-purple: #8b5cf6;
+            --accent-green: #10b981;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        .bg-gradient {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background:
+                radial-gradient(ellipse at 30% 40%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 60%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 90%, rgba(6, 182, 212, 0.08) 0%, transparent 50%);
+            animation: gradientShift 15s ease-in-out infinite alternate;
+            z-index: 0;
+        }
+
+        @keyframes gradientShift {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1) rotate(2deg); }
+            100% { transform: scale(1); }
+        }
+
+        .bg-grid {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 60px 60px;
+            z-index: 0;
+        }
+
+        .particles {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .particle {
+            position: absolute;
+            border-radius: 50%;
+            animation: floatParticle linear infinite;
+            opacity: 0;
+        }
+
+        @keyframes floatParticle {
+            0% { transform: translateY(100vh) scale(0); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+        }
+
+        /* Navbar */
+        .navbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 72px;
+            background: rgba(10, 14, 26, 0.75);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 48px;
+            z-index: 100;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 44px; height: 44px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 17px;
+            color: #fff;
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+            transition: transform 0.3s ease;
+        }
+
+        .logo:hover .logo-icon {
+            transform: scale(1.08) rotate(-3deg);
+        }
+
+        .logo-text {
+            font-size: 1.4em;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--text-primary), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .nav-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .nav-btn {
+            padding: 10px 24px;
+            border-radius: 12px;
+            font-size: 0.92em;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            border: none;
+        }
+
+        .nav-btn.ghost {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1.5px solid var(--border-glass);
+        }
+
+        .nav-btn.ghost:hover {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-primary);
+            border-color: rgba(255,255,255,0.15);
+        }
+
+        .nav-btn.primary {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            color: #fff;
+        }
+
+        .nav-btn.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(59, 130, 246, 0.4);
+        }
+
+        /* Hero Section */
+        .hero {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 72px 24px 0;
+            text-align: center;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 20px;
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: 50px;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: var(--accent-blue);
+            margin-bottom: 32px;
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation-delay: 0.1s;
+            opacity: 0;
+        }
+
+        .hero-badge .dot {
+            width: 8px; height: 8px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            animation: blink 2s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5em, 6vw, 4.5em);
+            font-weight: 800;
+            line-height: 1.1;
+            letter-spacing: -0.03em;
+            margin-bottom: 24px;
+            max-width: 800px;
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation-delay: 0.2s;
+            opacity: 0;
+        }
+
+        .hero h1 .gradient-text {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            background-size: 200% 200%;
+            animation: textGradient 5s ease infinite;
+        }
+
+        @keyframes textGradient {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        .hero-subtitle {
+            font-size: clamp(1em, 2vw, 1.25em);
+            color: var(--text-secondary);
+            max-width: 560px;
+            line-height: 1.7;
+            margin-bottom: 48px;
+            font-weight: 400;
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation-delay: 0.3s;
+            opacity: 0;
+        }
+
+        .hero-cta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            justify-content: center;
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation-delay: 0.4s;
+            opacity: 0;
+        }
+
+        .cta-btn {
+            padding: 16px 36px;
+            border-radius: 16px;
+            font-size: 1.05em;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            border: none;
+        }
+
+        .cta-btn.primary {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            color: #fff;
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-btn.primary::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .cta-btn.primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 35px rgba(59, 130, 246, 0.45);
+        }
+
+        .cta-btn.primary:hover::before { left: 100%; }
+
+        .cta-btn.secondary {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-primary);
+            border: 1.5px solid rgba(255,255,255,0.1);
+        }
+
+        .cta-btn.secondary:hover {
+            background: rgba(255,255,255,0.1);
+            transform: translateY(-3px);
+            border-color: rgba(255,255,255,0.2);
+        }
+
+        .cta-btn svg {
+            width: 20px; height: 20px;
+        }
+
+        /* Features */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            max-width: 900px;
+            margin: 80px auto 0;
+            padding: 0 24px;
+            animation: fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            animation-delay: 0.6s;
+            opacity: 0;
+        }
+
+        .feature-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-glass);
+            border-radius: 20px;
+            padding: 28px 24px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-6px);
+            border-color: rgba(59,130,246,0.2);
+            box-shadow: 0 12px 40px rgba(59,130,246,0.1);
+        }
+
+        .feature-icon {
+            width: 48px; height: 48px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 16px;
+        }
+
+        .feature-icon svg {
+            width: 24px; height: 24px;
+        }
+
+        .feature-card h3 {
+            font-size: 1.05em;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .feature-card p {
+            font-size: 0.85em;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 768px) {
+            .navbar { padding: 0 20px; }
+            .features { grid-template-columns: 1fr; max-width: 400px; }
+            .hero-cta { flex-direction: column; align-items: center; }
+            .cta-btn { width: 100%; max-width: 300px; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="bg-gradient"></div>
+<div class="bg-grid"></div>
+<div class="particles" id="particles"></div>
+
+<nav class="navbar">
+    <a href="/" class="logo">
+        <div class="logo-icon">RD</div>
+        <span class="logo-text">Remote Desktop</span>
+    </a>
+    <div class="nav-actions">
+        <a href="/login" class="nav-btn ghost">Sign In</a>
+        <a href="/register" class="nav-btn primary">Get Started</a>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="hero-badge">
+        <span class="dot"></span>
+        Secure & Encrypted Connections
+    </div>
+    <h1>Control your devices<br><span class="gradient-text">from anywhere</span></h1>
+    <p class="hero-subtitle">
+        Access your computers remotely with ultra-low latency WebRTC streaming, 
+        full keyboard & mouse control, file transfer, and clipboard sync.
+    </p>
+    <div class="hero-cta">
+        <a href="/login" class="cta-btn primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                <polyline points="10 17 15 12 10 7"/>
+                <line x1="15" y1="12" x2="3" y2="12"/>
+            </svg>
+            Launch Dashboard
+        </a>
+        <a href="/viewer" class="cta-btn secondary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            Open Viewer
+        </a>
+    </div>
+
+    <div class="features">
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(59,130,246,0.12);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+            </div>
+            <h3>End-to-End Secure</h3>
+            <p>Encrypted peer-to-peer connections with JWT authentication</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(6,182,212,0.12);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+            </div>
+            <h3>Ultra-Low Latency</h3>
+            <p>WebRTC-powered streaming for real-time remote access</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(139,92,246,0.12);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="12" y1="18" x2="12" y2="12"/>
+                    <line x1="9" y1="15" x2="15" y2="15"/>
+                </svg>
+            </div>
+            <h3>File Transfer</h3>
+            <p>Seamlessly transfer files between local and remote machines</p>
+        </div>
+    </div>
+</section>
+
+<script>
+(function() {
+    const container = document.getElementById('particles');
+    const colors = ['rgba(59,130,246,0.3)', 'rgba(139,92,246,0.25)', 'rgba(6,182,212,0.3)', 'rgba(16,185,129,0.2)'];
+    for (let i = 0; i < 40; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const size = Math.random() * 4 + 1;
+        p.style.cssText = `
+            width: ${size}px; height: ${size}px;
+            left: ${Math.random() * 100}%;
+            background: ${colors[Math.floor(Math.random() * colors.length)]};
+            animation-duration: ${Math.random() * 20 + 10}s;
+            animation-delay: ${Math.random() * 10}s;
+        `;
+        container.appendChild(p);
+    }
+})();
+
+// Auto-redirect if already logged in
+if (localStorage.getItem('token')) {
+    // User is already logged in, show "Go to Dashboard" more prominently
+}
+</script>
+</body>
+</html>

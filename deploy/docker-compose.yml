@@ -1,0 +1,85 @@
+networks:
+  rd_net:
+    driver: bridge
+    internal: true   # FastAPI is internal-only
+
+services:
+  # ── FastAPI Remote Desktop Application ─────────────────────────────────
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    networks:
+      - rd_net
+    # DO NOT publish ports here — Caddy is the only public entry point
+    expose:
+      - "9005"
+    environment:
+      APP_ENV: production
+      HOST: "0.0.0.0"
+      PORT: "9005"
+      # Secrets — inject at deploy time, never hardcode here
+      SECRET_KEY: "${SECRET_KEY}"
+      DATABASE_URL: "sqlite:////data/rd_app.db"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS}"
+      ALLOWED_WS_ORIGINS: "${ALLOWED_WS_ORIGINS}"
+      PUBLIC_ORIGIN: "${PUBLIC_ORIGIN}"
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: "strict"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+      REFRESH_TOKEN_EXPIRE_DAYS: "7"
+      CONTROL_SESSION_EXPIRE_MINUTES: "10"
+      WEBSOCKET_TICKET_EXPIRE_SECONDS: "60"
+      MAX_WS_MESSAGE_BYTES: "65536"
+      AUDIT_LOG_RETENTION_DAYS: "90"
+      ENCODER: "auto"
+      CAPTURE_FPS: "30"
+    volumes:
+      - app_data:/data
+      - app_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9005/favicon.ico')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Caddy Reverse Proxy (public HTTPS entry point) ─────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    networks:
+      - rd_net
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"    # HTTP/3 QUIC
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: "${PUBLIC_DOMAIN}"
+    depends_on:
+      - app
+
+  # ── coturn TURN server (optional — only for multi-network WebRTC relay) ─
+  # Enable with:  docker compose --profile turn up
+  turn:
+    image: coturn/coturn:4-alpine
+    profiles:
+      - turn
+    restart: unless-stopped
+    network_mode: host    # TURN needs direct host networking for UDP
+    volumes:
+      - ./turnserver.conf.example:/etc/coturn/turnserver.conf:ro
+      - turn_data:/var/lib/coturn
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+volumes:
+  app_data:
+  app_uploads:
+  caddy_data:
+  caddy_config:
+  turn_data:

@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment config — NEVER commit real secrets
+.env
+*.env.local
+*.env.production
+
+# TLS / certificates — NEVER commit private keys
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads / user files
+uploads/
+downloads/
+recordings/
+
+# Runtime-generated static content
+static/uploads/
+static/downloads/
+static/recordings/
+static/private/
+
+# Logs
+*.log
+logs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Deployment secrets (generated at deploy time)
+deploy/*.secret
+deploy/secrets/
+
+# Scratch & local files
+reload.txt
+JARVIS.txt
+*.b64
+
+# Keep examples tracked
+!.env.example
+!deploy/turnserver.conf.example
+

@@ -1,0 +1,69 @@
+# deploy/turnserver.conf.example
+# ─────────────────────────────────────────────────────────────────────────────
+#  coturn TURN/STUN Server configuration — EXAMPLE ONLY
+#  DO NOT use in production without reviewing and changing every placeholder.
+#  Real credentials must NEVER be committed to version control.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Network ──────────────────────────────────────────────────────────────────
+# Replace with your server's public IP
+external-ip=YOUR_SERVER_PUBLIC_IP
+
+# TURN listening ports
+listening-port=3478
+tls-listening-port=5349
+
+# ── TLS certificates (required for turns:// secure relay) ────────────────────
+# Provide valid certs, e.g. from Let's Encrypt via certbot
+cert=/etc/ssl/certs/turn.crt
+pkey=/etc/ssl/private/turn.key
+
+# ── Relay UDP port range (restrict to reduce firewall surface area) ───────────
+min-port=49152
+max-port=65535
+
+# ── Authentication — HMAC-SHA1 time-limited credentials ──────────────────────
+# use-auth-secret enables ephemeral credential support (recommended)
+use-auth-secret
+
+# Long-term HMAC secret — generate with: openssl rand -base64 32
+# Set this via environment variable or secrets manager; never hardcode
+static-auth-secret=REPLACE_WITH_STRONG_RANDOM_SECRET
+
+# Realm (usually your domain)
+realm=turn.example.com
+
+# ── No anonymous relay ────────────────────────────────────────────────────────
+no-auth=0
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log-file=/var/log/coturn/turnserver.log
+verbose
+
+# ── Quotas (prevent abuse as an open relay) ──────────────────────────────────
+# Maximum simultaneous TURN sessions per user
+user-quota=10
+# Maximum total simultaneous TURN sessions
+total-quota=100
+# Maximum allowed bandwidth per session (bytes/s)
+max-bps=5000000
+
+# ── Fingerprint ───────────────────────────────────────────────────────────────
+fingerprint
+
+# ── Disable plaintext fallback ────────────────────────────────────────────────
+# Require TLS for relayed connections
+no-tls=0
+no-dtls=0
+
+# ── Prevent TURN server being used as an open proxy ─────────────────────────
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=240.0.0.0-255.255.255.255
