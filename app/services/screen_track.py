@@ -9,11 +9,15 @@ import numpy as np
 from aiortc import VideoStreamTrack
 from av import VideoFrame
 from app.core.windows_desktop import attach_interactive_desktop
+from app.services.encoder import get_active_encoder, get_active_encoder_label
 
 logger = logging.getLogger(__name__)
 
-# Encoder label for HUD telemetry
-ENCODER = "libx264"
+# Encoder label for backwards-compatibility
+def get_encoder_name() -> str:
+    return get_active_encoder()
+
+ENCODER = "h264_nvenc"  # Initialized dynamically by encoder service
 
 
 class ScreenTrack(VideoStreamTrack):

@@ -2,8 +2,9 @@ import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from app.services.screen_track import ScreenTrack, ENCODER
+from app.services.screen_track import ScreenTrack
 from app.services.audio_track import AudioTrack
+from app.services.encoder import get_active_encoder, get_active_encoder_label
 from app.services.state import pcs
 from app.routers.auth import get_current_user
 from app.models.user import User
@@ -106,13 +107,10 @@ async def offer(request: Request, current_user: User = Depends(get_current_user)
 @router.get("/info")
 async def get_stream_info(current_user: User = Depends(get_current_user)):
     """Provides encoder info and active stream telemetry for the viewer HUD."""
-    encoder_labels = {
-        "h264_nvenc": "H.264 (NVIDIA NVENC)",
-        "libx264": "H.264 (CPU - libx264)"
-    }
+    encoder = get_active_encoder()
     return {
-        "encoder": ENCODER,
-        "encoder_label": encoder_labels.get(ENCODER, "H.264 (CPU - libx264)"),
+        "encoder": encoder,
+        "encoder_label": get_active_encoder_label(),
         "active_peers": len(pcs),
     }
 
@@ -129,5 +127,5 @@ async def get_stream_stats(current_user: User = Depends(get_current_user)):
     return {
         "active_peers": len(pcs),
         "tracks": track_stats,
-        "encoder": ENCODER,
+        "encoder": get_active_encoder(),
     }

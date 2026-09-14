@@ -2844,14 +2844,17 @@ async function fetchEncoderInfo() {
 function stopStatsHUD() {
     if (_statsInterval) clearInterval(_statsInterval);
     _statsInterval = null;
+    _encoderInfoFetched = false;
     const fpsEl = document.getElementById('hud-fps');
     const rttEl = document.getElementById('hud-rtt');
     const bitEl = document.getElementById('hud-bitrate');
     const resEl = document.getElementById('hud-res');
+    const encEl = document.getElementById('hud-encoder');
     if (fpsEl) fpsEl.textContent = '—';
     if (rttEl) rttEl.textContent = '—';
     if (bitEl) bitEl.textContent = '—';
     if (resEl) resEl.textContent = '—';
+    if (encEl) encEl.textContent = '—';
 }
 
 // Monitor Selector
