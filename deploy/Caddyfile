@@ -19,7 +19,7 @@
     }
 
     # ── Reverse proxy to FastAPI ──────────────────────────────────────────
-    reverse_proxy 127.0.0.1:9005 {
+    reverse_proxy {$UPSTREAM:127.0.0.1:9005} {
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
 

@@ -71,7 +71,7 @@ FastAPI Backend
 ├── app/models/     SQLAlchemy models (Users, Sessions, WS Tickets, Audit Events)
 ├── app/routers/    Auth, stream, control, files, monitors, power, audit APIs
 ├── app/services/   Threaded screen capture (MSS), input injection (PyAutoGUI), audio
-└── tests/          36/36 automated security and functional regression tests
+└── tests/          42/42 automated security and regression tests
 ```
 
 ---

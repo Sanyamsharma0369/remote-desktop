@@ -72,7 +72,8 @@ backend/
 │   │   ├── user.py                 # User account & credential definitions
 │   │   ├── user_session.py         # Refresh token & session state tracking
 │   │   ├── ws_ticket.py            # Ephemeral WebSocket ticket records
-│   │   └── audit.py                # Structured audit trail records
+│   │   ├── audit.py                # Structured audit trail records
+│   │   └── file.py                 # Persistent file metadata records (FileRecord)
 │   ├── routers/
 │   │   ├── auth.py                 # Login, refresh, register, sessions & ticket endpoints
 │   │   ├── stream.py               # WebRTC SDP signaling & stream lifecycle
@@ -93,5 +94,5 @@ backend/
 │   └── turnserver.conf.example     # Coturn STUN/TURN configuration
 ├── docs/                           # Architecture, security & deployment guides
 ├── static/                         # PWA icons, assets, and screenshots
-└── tests/                          # 36 automated security & functional tests
+└── tests/                          # 42 automated security and regression tests
 ```

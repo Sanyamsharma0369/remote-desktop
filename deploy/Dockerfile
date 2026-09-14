@@ -48,6 +48,7 @@ COPY app/         ./app/
 COPY server.py    ./
 COPY static/      ./static/
 COPY *.html       ./
+COPY favicon.ico* manifest.json* ./
 
 # Persistent data volume mount point
 RUN mkdir -p /data /app/uploads && chown -R appuser:appuser /data /app

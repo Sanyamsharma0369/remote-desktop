@@ -1,0 +1,21 @@
+# .dockerignore — Exclude local state, secrets, and caches from Docker build context
+.git
+.gitignore
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+downloads/
+recordings/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+scratch/
+tests/
+.agents/

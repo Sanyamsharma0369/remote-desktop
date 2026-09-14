@@ -21,6 +21,7 @@ services:
       PORT: "9005"
       # Secrets — inject at deploy time, never hardcode here
       SECRET_KEY: "${SECRET_KEY}"
+      INITIAL_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD:-}"
       DATABASE_URL: "sqlite:////data/rd_app.db"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS}"
       ALLOWED_WS_ORIGINS: "${ALLOWED_WS_ORIGINS}"
@@ -61,6 +62,7 @@ services:
       - caddy_config:/config
     environment:
       DOMAIN: "${PUBLIC_DOMAIN}"
+      UPSTREAM: "app:9005"
     depends_on:
       - app
 
