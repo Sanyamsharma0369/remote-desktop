@@ -1,17 +1,16 @@
 """
-tests/test_regressions.py — Regression tests for Phase 1 stabilization fixes.
+tests/test_regressions.py — Regression tests for Phase 1 & Phase 2 stabilization fixes.
 Covers:
   - WebRTC offer authentication requirement (/api/stream/offer)
   - Stream info routing and double-prefix prevention
   - Per-user file ownership and isolation (User A vs User B vs Admin)
+  - Persistent file metadata in DB (FileRecord model)
   - File upload MIME validation and chunked size limit
   - Power action auditing and schema safety
-  - Mouse coordinate boundary clamping
 """
 import io
 import pytest
-from app.services.input_service import InputService
-import app.routers.files as files_module
+from app.models.file import FileRecord
 
 
 def test_stream_offer_requires_auth(client):
@@ -33,8 +32,9 @@ def test_stream_info_endpoint(client, user_token):
     assert bad_res.status_code == 404
 
 
-def test_file_ownership_isolation(client, user_token, admin_token, db):
-    """User A uploads a file. User B cannot see, download, or delete it (403). Admin can."""
+def test_file_ownership_isolation_and_persistence(client, user_token, admin_token, db):
+    """User A uploads a file. User B cannot see, download, or delete it (403). Admin can.
+    Verified against persistent database table (FileRecord)."""
     from app.models.user import User
     from app.routers.auth import get_password_hash, create_access_token
 
@@ -49,8 +49,6 @@ def test_file_ownership_isolation(client, user_token, admin_token, db):
     db.refresh(user_b)
     user2_token = create_access_token({"sub": user_b.username})
 
-    files_module.file_metadata.clear()
-
     # User 1 uploads
     file_bytes = b"Sensitive data owned by user 1"
     res_upload = client.post(
@@ -60,6 +58,13 @@ def test_file_ownership_isolation(client, user_token, admin_token, db):
     )
     assert res_upload.status_code == 200
     file_id = res_upload.json()["file_id"]
+
+    # Verify directly in DB
+    record = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
+    assert record is not None
+    assert record.filename == "report.txt"
+    assert record.size == len(file_bytes)
+    assert record.content_type == "text/plain"
 
     # User 2 list: should NOT see file
     res_list_b = client.get("/api/files/files", headers={"Authorization": f"Bearer {user2_token}"})
@@ -84,8 +89,12 @@ def test_file_ownership_isolation(client, user_token, admin_token, db):
     assert res_down_admin.status_code == 200
     assert res_down_admin.content == file_bytes
 
-    # Cleanup
-    client.delete(f"/api/files/files/{file_id}", headers={"Authorization": f"Bearer {admin_token}"})
+    # Delete via API
+    del_res = client.delete(f"/api/files/files/{file_id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert del_res.status_code == 200
+
+    # Verify removed from DB
+    assert db.query(FileRecord).filter(FileRecord.file_id == file_id).first() is None
 
 
 def test_file_upload_mime_validation(client, user_token):

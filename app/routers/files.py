@@ -1,8 +1,8 @@
 """
-app/routers/files.py — Authenticated file upload/download/delete.
+app/routers/files.py — Authenticated file upload/download/delete with persistent DB metadata.
 
 Ownership model:
-  - Each uploaded file records the uploader's user ID.
+  - Each uploaded file records the uploader's user ID in the database.
   - Normal users can only list/download/delete their own files.
   - Admin users can list/download/delete ALL files.
 
@@ -12,19 +12,20 @@ Memory safety:
     before disk write completes if they exceed the limit.
   - Partial files are cleaned up on upload failure.
 
-NOTE: File metadata is stored in-process memory (file_metadata dict).
-      This means metadata does not survive a server restart. For a
-      production deployment, move this to a database table. This is
-      intentionally documented as a known limitation of the current
-      stabilization release.
+Persistence:
+  - File metadata is persisted in the database via the FileRecord model,
+    retaining ownership and metadata across server restarts.
 """
 import os
 import uuid
 import logging
 from fastapi import APIRouter, File, UploadFile, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+from app.core.database import get_db
 from app.routers.auth import get_current_user
 from app.models.user import User
+from app.models.file import FileRecord
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -54,22 +55,19 @@ ALLOWED_TYPES = {
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
-# In-memory metadata store. Key: file_id (str UUID).
-# Known limitation: does not survive process restart.
-file_metadata: dict[str, dict] = {}
 
-
-def _user_can_access(meta: dict, user: User) -> bool:
+def _user_can_access(record: FileRecord, user: User) -> bool:
     """Return True if this user is allowed to read/delete the file."""
     if user.role == "admin":
         return True
-    return meta.get("uploader_id") == user.id
+    return record.uploader_id == user.id
 
 
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     # ── MIME type validation ──
     if file.content_type not in ALLOWED_TYPES:
@@ -123,15 +121,18 @@ async def upload_file(
         log.error("Upload failed for user '%s': %s", current_user.username, e)
         raise HTTPException(status_code=500, detail="Upload failed unexpectedly.")
 
-    file_metadata[file_id] = {
-        "file_id": file_id,
-        "filename": safe_filename,
-        "size": total_bytes,
-        "path": file_path,
-        "content_type": file.content_type,
-        "uploader_id": current_user.id,         # ownership
-        "uploader_username": current_user.username,
-    }
+    # ── Persist file metadata in DB ──
+    record = FileRecord(
+        file_id=file_id,
+        filename=safe_filename,
+        size=total_bytes,
+        path=file_path,
+        content_type=file.content_type,
+        uploader_id=current_user.id,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
 
     log.info(
         "File uploaded: '%s' (%d bytes) by '%s' (id=%d)",
@@ -141,41 +142,51 @@ async def upload_file(
 
 
 @router.get("/files")
-async def list_files(current_user: User = Depends(get_current_user)):
-    """Return only files this user is allowed to see."""
-    visible = [
-        meta for meta in file_metadata.values()
-        if _user_can_access(meta, current_user)
-    ]
-    return {"files": visible}
+async def list_files(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return only files this user is allowed to see from DB."""
+    if current_user.role == "admin":
+        records = db.query(FileRecord).all()
+    else:
+        records = db.query(FileRecord).filter(FileRecord.uploader_id == current_user.id).all()
+
+    return {"files": [r.to_dict() for r in records]}
 
 
 @router.get("/download/{file_id}")
 async def download_file(
     file_id: str,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    meta = file_metadata.get(file_id)
-    if not meta:
+    record = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
+    if not record:
         raise HTTPException(status_code=404, detail="File not found")
-    if not _user_can_access(meta, current_user):
+    if not _user_can_access(record, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
-    if not os.path.exists(meta["path"]):
+    if not os.path.exists(record.path):
         raise HTTPException(status_code=404, detail="File not found on disk")
-    return FileResponse(path=meta["path"], filename=meta["filename"])
+    return FileResponse(path=record.path, filename=record.filename)
 
 
 @router.delete("/files/{file_id}")
 async def delete_file(
     file_id: str,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    meta = file_metadata.get(file_id)
-    if not meta:
+    record = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
+    if not record:
         raise HTTPException(status_code=404, detail="File not found")
-    if not _user_can_access(meta, current_user):
+    if not _user_can_access(record, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
-    file_metadata.pop(file_id, None)
-    if os.path.exists(meta["path"]):
-        os.remove(meta["path"])
+
+    file_path = record.path
+    db.delete(record)
+    db.commit()
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
     return {"success": True}
