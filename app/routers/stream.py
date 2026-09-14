@@ -2,10 +2,10 @@ import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from app.services.screen_track import ScreenTrack
+from app.services.screen_track import ScreenTrack, capture_hub
 from app.services.audio_track import AudioTrack
 from app.services.encoder import get_active_encoder, get_active_encoder_label
-from app.services.state import pcs
+from app.services.state import pcs, control_manager
 from app.routers.auth import get_current_user
 from app.models.user import User
 
@@ -106,12 +106,15 @@ async def offer(request: Request, current_user: User = Depends(get_current_user)
 
 @router.get("/info")
 async def get_stream_info(current_user: User = Depends(get_current_user)):
-    """Provides encoder info and active stream telemetry for the viewer HUD."""
+    """Provides encoder info, active controller, and stream telemetry for the viewer HUD."""
     encoder = get_active_encoder()
+    ctrl_info = control_manager.get_active_controller_info()
     return {
         "encoder": encoder,
         "encoder_label": get_active_encoder_label(),
         "active_peers": len(pcs),
+        "active_controller": ctrl_info.get("username") if ctrl_info else None,
+        "capture_workers_active": capture_hub.get_active_worker_count(),
     }
 
 
@@ -124,8 +127,11 @@ async def get_stream_stats(current_user: User = Depends(get_current_user)):
             if isinstance(sender.track, ScreenTrack):
                 track_stats.append(sender.track.get_stats())
 
+    ctrl_info = control_manager.get_active_controller_info()
     return {
         "active_peers": len(pcs),
         "tracks": track_stats,
         "encoder": get_active_encoder(),
+        "active_controller": ctrl_info.get("username") if ctrl_info else None,
+        "capture_hub": capture_hub.get_hub_stats(),
     }

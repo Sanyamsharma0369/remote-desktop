@@ -1,33 +1,201 @@
+"""
+app/services/screen_track.py — Broadcast Screen Capture Hub and Multi-Client WebRTC Tracks.
+
+Architecture:
+- SharedCaptureHub: Exactly 1 background capture worker thread per physical monitor.
+- MonitorCaptureWorker: Reference-counted capture loop that starts on the first viewer
+  subscription and automatically terminates when 0 subscribers remain.
+- ScreenTrack: Individual aiortc VideoStreamTrack per connected viewer. Pulls raw frames
+  from the shared capture worker, performs aspect-preserving scaling to the viewer's
+  chosen quality profile, and delivers with independent PTS pacing and NVENC encoding.
+"""
+
+from __future__ import annotations
+
 import logging
 import asyncio
 import time
 import threading
 from fractions import Fraction
+from typing import Dict, Set, Optional, Tuple
+
 import cv2
 import mss
 import numpy as np
 from aiortc import VideoStreamTrack
+from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
+
 from app.core.windows_desktop import attach_interactive_desktop
 from app.services.encoder import get_active_encoder, get_active_encoder_label
 
 logger = logging.getLogger(__name__)
 
-# Encoder label for backwards-compatibility
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Capture Hub & Reference-Counted Monitor Workers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MonitorCaptureWorker:
+    """
+    Dedicated capture worker for a single physical monitor.
+    Spawns exactly 1 background capture thread while active subscribers > 0.
+    """
+
+    def __init__(self, monitor_index: int) -> None:
+        self.monitor_index = monitor_index
+        self._subscribers: Set[ScreenTrack] = set()
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+        # Latest raw screen capture state (unscaled BGR)
+        self._latest_raw_frame: Optional[np.ndarray] = None
+        self._latest_dims: Tuple[int, int] = (0, 0)
+        self._frame_seq: int = 0
+
+    def subscribe(self, track: ScreenTrack) -> None:
+        with self._lock:
+            self._subscribers.add(track)
+            subscriber_count = len(self._subscribers)
+            if not self._running:
+                self._running = True
+                self._thread = threading.Thread(
+                    target=self._capture_loop,
+                    daemon=True,
+                    name=f"CaptureWorker-Display{self.monitor_index}",
+                )
+                self._thread.start()
+                logger.info(
+                    "CaptureWorker for Display %d STARTED (subscribers: %d)",
+                    self.monitor_index,
+                    subscriber_count,
+                )
+            else:
+                logger.info(
+                    "CaptureWorker for Display %d added subscriber (total: %d)",
+                    self.monitor_index,
+                    subscriber_count,
+                )
+
+    def unsubscribe(self, track: ScreenTrack) -> None:
+        with self._lock:
+            self._subscribers.discard(track)
+            subscriber_count = len(self._subscribers)
+            if subscriber_count == 0 and self._running:
+                self._running = False
+                logger.info(
+                    "CaptureWorker for Display %d STOPPING (0 subscribers remaining)",
+                    self.monitor_index,
+                )
+
+    def get_latest_frame(self) -> Tuple[Optional[np.ndarray], Tuple[int, int], int]:
+        """Thread-safe read of latest unscaled desktop frame."""
+        with self._lock:
+            return self._latest_raw_frame, self._latest_dims, self._frame_seq
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._running and (self._thread is not None and self._thread.is_alive())
+
+    @property
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._subscribers)
+
+    def _capture_loop(self) -> None:
+        attach_interactive_desktop()
+        sct = mss.mss()
+
+        while self._running:
+            try:
+                monitors = sct.monitors
+                m_idx = max(1, min(self.monitor_index, len(monitors) - 1))
+                monitor = monitors[m_idx]
+
+                raw = sct.grab(monitor)
+                # BGRA -> BGR
+                image = np.frombuffer(raw.bgra, dtype=np.uint8).reshape(
+                    raw.height, raw.width, 4
+                )[:, :, :3]
+                image = np.ascontiguousarray(image)
+
+                with self._lock:
+                    self._latest_raw_frame = image
+                    self._latest_dims = (image.shape[1], image.shape[0])
+                    self._frame_seq += 1
+
+                # Cap capture loop pacing to ~40 FPS to avoid unnecessary busy loops
+                time.sleep(0.015)
+
+            except Exception:
+                logger.exception("CaptureWorker Display %d loop error — retrying", self.monitor_index)
+                time.sleep(0.05)
+
+        try:
+            sct.close()
+        except Exception:
+            pass
+
+        with self._lock:
+            self._latest_raw_frame = None
+            self._thread = None
+        logger.info("CaptureWorker for Display %d TERMINATED cleanly", self.monitor_index)
+
+
+class SharedCaptureHub:
+    """Registry of active monitor capture workers."""
+
+    def __init__(self) -> None:
+        self._workers: Dict[int, MonitorCaptureWorker] = {}
+        self._hub_lock = threading.RLock()
+
+    def get_worker(self, monitor_index: int) -> MonitorCaptureWorker:
+        with self._hub_lock:
+            if monitor_index not in self._workers:
+                self._workers[monitor_index] = MonitorCaptureWorker(monitor_index)
+            return self._workers[monitor_index]
+
+    def get_active_worker_count(self) -> int:
+        with self._hub_lock:
+            return sum(1 for w in self._workers.values() if w.is_running)
+
+    def get_hub_stats(self) -> Dict[str, Any]:
+        with self._hub_lock:
+            active_count = sum(1 for w in self._workers.values() if w.is_running)
+            return {
+                "active_workers": active_count,
+                "monitors": {
+                    idx: {
+                        "running": w.is_running,
+                        "subscribers": w.subscriber_count,
+                        "dims": w._latest_dims,
+                    }
+                    for idx, w in self._workers.items()
+                },
+            }
+
+
+# Singleton capture hub
+capture_hub = SharedCaptureHub()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Viewer ScreenTrack (VideoStreamTrack)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def get_encoder_name() -> str:
     return get_active_encoder()
 
-ENCODER = "h264_nvenc"  # Initialized dynamically by encoder service
+ENCODER = "h264_nvenc"
 
 
 class ScreenTrack(VideoStreamTrack):
     """
-    Performance-oriented screen capture track for WebRTC remote desktop streaming.
-
-    Architecture: A dedicated background thread continuously grabs and resizes
-    frames, placing the latest one into a shared slot. The async recv() method
-    reads from that slot and returns immediately, keeping the aiortc event loop
-    unblocked and achieving stable 25-30 FPS delivery.
+    Independent WebRTC video track for a connected viewer.
+    Subscribes to the shared CaptureWorker for its display, downscales to its
+    requested resolution profile, and paces timestamps independently.
     """
 
     kind = "video"
@@ -40,101 +208,50 @@ class ScreenTrack(VideoStreamTrack):
         fps: int = 30,
     ):
         super().__init__()
-        attach_interactive_desktop()
         self.monitor_index = monitor_index
         self.target_width = width
         self.target_height = height
         self.fps = fps
 
-        # Shared state between capture thread and async recv()
-        self._frame_lock = threading.Lock()
-        self._latest_frame: np.ndarray | None = None
-        self._latest_dims: tuple[int, int] = (width, height)
+        # Subscribe to shared capture worker
+        self._worker = capture_hub.get_worker(self.monitor_index)
+        self._worker.subscribe(self)
 
-        # Timing for delivery-side FPS measurement
+        # Per-viewer scaling cache
+        self._last_frame_seq = -1
+        self._cached_resized_frame: Optional[np.ndarray] = None
+        self._current_dims: Tuple[int, int] = (width, height)
+
+        # Timing and delivery-side metrics
         self.frames_sent = 0
         self._fps_started = time.monotonic()
         self._fps_count = 0
-        self._start_time: float | None = None
-        self._last_frame_time: float | None = None
-
-        # Start background capture thread
+        self._start_time: Optional[float] = None
+        self._last_frame_time: Optional[float] = None
+        self._stopped = False
         self._running = True
-        self._capture_thread = threading.Thread(
-            target=self._capture_loop, daemon=True, name="ScreenCaptureThread"
-        )
-        self._capture_thread.start()
 
-    # ------------------------------------------------------------------
-    # Background capture thread — runs independently of asyncio
-    # ------------------------------------------------------------------
-
-    def _capture_loop(self) -> None:
-        """
-        Continuously grabs desktop frames, resizes them, and stores the
-        latest in self._latest_frame. Runs in a daemon thread so it never
-        blocks the asyncio event loop.
-        """
-        attach_interactive_desktop()
-        sct = mss.mss()
-
-        while self._running:
-            try:
-                monitors = sct.monitors
-                monitor_index = max(1, min(self.monitor_index, len(monitors) - 1))
-                monitor = monitors[monitor_index]
-
-                # Capture BGRA, drop alpha channel -> BGR
-                raw = sct.grab(monitor)
-                image = np.frombuffer(raw.bgra, dtype=np.uint8).reshape(
-                    raw.height, raw.width, 4
-                )[:, :, :3]
-
-                source_h, source_w = image.shape[:2]
-                tw, th = self.target_width, self.target_height
-
-                if tw <= 0 or th <= 0:
-                    # Native resolution mode: 100% full monitor pixels
-                    rw = max(2, int(source_w) & ~1)
-                    rh = max(2, int(source_h) & ~1)
-                    if rw != source_w or rh != source_h:
-                        image = image[:rh, :rw]
-                else:
-                    # Aspect-preserving downscale; never upscale
-                    scale = min(tw / source_w, th / source_h, 1.0)
-                    rw = max(2, int(source_w * scale) & ~1)   # ensure even (H.264)
-                    rh = max(2, int(source_h * scale) & ~1)
-
-                    if rw != source_w or rh != source_h:
-                        image = cv2.resize(image, (rw, rh), interpolation=cv2.INTER_AREA)
-
-                image = np.ascontiguousarray(image)
-
-                with self._frame_lock:
-                    self._latest_frame = image
-                    self._latest_dims = (rw, rh)
-
-            except Exception:
-                logger.exception("Capture thread error — retrying")
-                time.sleep(0.05)
-
-        sct.close()
-
-    # ------------------------------------------------------------------
-    # Monitor / quality control (thread-safe writes to simple attrs)
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # Monitor & Quality Controls
+    # ─────────────────────────────────────────────────────────────────────────
 
     def set_monitor(self, monitor_index: int) -> bool:
-        """Switch physical capture display (1..N)."""
         if not isinstance(monitor_index, int):
             return False
-        # The capture thread clamps on next iteration, so just update the attr.
+        if monitor_index == self.monitor_index:
+            return True
+
+        # Switch worker subscription
+        self._worker.unsubscribe(self)
         self.monitor_index = monitor_index
-        logger.info("Screen capture switched to Display %d", monitor_index)
+        self._worker = capture_hub.get_worker(self.monitor_index)
+        self._worker.subscribe(self)
+        self._last_frame_seq = -1
+        self._cached_resized_frame = None
+        logger.info("ScreenTrack switched subscription to Display %d", monitor_index)
         return True
 
     def set_quality(self, width: int, height: int, fps: int) -> None:
-        """Dynamically update target resolution and frame rate with strict bounds."""
         w = int(width)
         h = int(height)
         if w <= 0 or h <= 0:
@@ -144,6 +261,7 @@ class ScreenTrack(VideoStreamTrack):
             self.target_width = max(480, min(w, 2560))
             self.target_height = max(270, min(h, 1600))
         self.fps = max(10, min(int(fps), 30))
+        self._cached_resized_frame = None
         logger.info(
             "ScreenTrack quality updated: target=%dx%d @ %d FPS (native=%s)",
             self.target_width,
@@ -153,18 +271,16 @@ class ScreenTrack(VideoStreamTrack):
         )
 
     def get_stats(self) -> dict:
-        """Return real-time metrics of the capture and delivery pipeline."""
-        with self._frame_lock:
-            cur_w, cur_h = self._latest_dims
         return {
             "target_fps": self.fps,
             "target_width": self.target_width,
             "target_height": self.target_height,
-            "current_width": cur_w,
-            "current_height": cur_h,
+            "current_width": self._current_dims[0],
+            "current_height": self._current_dims[1],
             "frames_sent": self.frames_sent,
             "monitor_index": self.monitor_index,
-            "is_running": self._running,
+            "is_running": not self._stopped,
+            "worker_running": self._worker.is_running,
         }
 
     @staticmethod
@@ -183,9 +299,9 @@ class ScreenTrack(VideoStreamTrack):
                 for index, monitor in enumerate(sct.monitors[1:], start=1)
             ]
 
-    # ------------------------------------------------------------------
-    # aiortc PTS pacing — stays on the event loop (cheap)
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # Frame Delivery & PTS Pacing
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def next_timestamp(self) -> tuple[int, Fraction]:
         now = time.monotonic()
@@ -193,7 +309,6 @@ class ScreenTrack(VideoStreamTrack):
             self._start_time = now
             self._last_frame_time = now
 
-        # Pace delivery to target FPS
         target_interval = 1.0 / max(1, self.fps)
         elapsed_since_last = now - self._last_frame_time
         sleep_needed = target_interval - elapsed_since_last
@@ -205,23 +320,47 @@ class ScreenTrack(VideoStreamTrack):
         pts = int((now - self._start_time) * 90000)
         return pts, Fraction(1, 90000)
 
-    # ------------------------------------------------------------------
-    # aiortc recv — non-blocking: reads pre-rendered frame from slot
-    # ------------------------------------------------------------------
-
     async def recv(self) -> VideoFrame:
+        if self._stopped:
+            raise MediaStreamError("ScreenTrack stopped")
+
         pts, time_base = await self.next_timestamp()
 
-        with self._frame_lock:
-            image = self._latest_frame
-            rw, rh = self._latest_dims
+        raw_frame, (source_w, source_h), seq = self._worker.get_latest_frame()
 
-        if image is None:
-            # Capture thread hasn't produced first frame yet; send black
-            image = np.zeros(
-                (self.target_height, self.target_width, 3), dtype=np.uint8
-            )
-            rw, rh = self.target_width, self.target_height
+        if raw_frame is None:
+            # Worker has not captured first frame yet
+            rw = self.target_width if self.target_width > 0 else 1280
+            rh = self.target_height if self.target_height > 0 else 720
+            image = np.zeros((rh, rw, 3), dtype=np.uint8)
+            self._current_dims = (rw, rh)
+        elif seq == self._last_frame_seq and self._cached_resized_frame is not None:
+            # Frame unchanged; use cached resized version
+            image = self._cached_resized_frame
+        else:
+            # Process fresh frame according to viewer's resolution request
+            tw, th = self.target_width, self.target_height
+            if tw <= 0 or th <= 0:
+                # Native mode: ensure even dimensions
+                rw = max(2, int(source_w) & ~1)
+                rh = max(2, int(source_h) & ~1)
+                if rw != source_w or rh != source_h:
+                    image = raw_frame[:rh, :rw]
+                else:
+                    image = raw_frame
+            else:
+                scale = min(tw / source_w, th / source_h, 1.0)
+                rw = max(2, int(source_w * scale) & ~1)
+                rh = max(2, int(source_h * scale) & ~1)
+                if rw != source_w or rh != source_h:
+                    image = cv2.resize(raw_frame, (rw, rh), interpolation=cv2.INTER_AREA)
+                else:
+                    image = raw_frame
+
+            image = np.ascontiguousarray(image)
+            self._cached_resized_frame = image
+            self._last_frame_seq = seq
+            self._current_dims = (rw, rh)
 
         frame = VideoFrame.from_ndarray(image, format="bgr24")
         frame.pts = pts
@@ -230,30 +369,29 @@ class ScreenTrack(VideoStreamTrack):
         self.frames_sent += 1
         self._fps_count += 1
 
-        if self._fps_count % 30 == 0:
+        if self._fps_count % 60 == 0:
             now = time.monotonic()
             elapsed = now - self._fps_started
-            delivery_fps = 30.0 / elapsed if elapsed > 0 else 0.0
+            delivery_fps = 60.0 / elapsed if elapsed > 0 else 0.0
             self._fps_started = now
             logger.info(
-                "Delivery pipeline: %.1f FPS | Display %d (%dx%d)",
+                "Track Delivery: %.1f FPS | Display %d (%dx%d)",
                 delivery_fps,
                 self.monitor_index,
-                rw,
-                rh,
+                self._current_dims[0],
+                self._current_dims[1],
             )
 
         return frame
 
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Cleanup
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def stop(self) -> None:
-        self._running = False
-        try:
-            self._capture_thread.join(timeout=2.0)
-        except Exception:
-            pass
-        super().stop()
-
+        if not self._stopped:
+            self._stopped = True
+            self._running = False
+            self._worker.unsubscribe(self)
+            super().stop()
+            logger.info("ScreenTrack stopped for Display %d", self.monitor_index)

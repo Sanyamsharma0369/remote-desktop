@@ -1,14 +1,16 @@
 """
-app/routers/control.py — Hardened WebSocket control endpoint.
+app/routers/control.py — Hardened WebSocket control endpoint with Multi-Client Control Arbitration.
 
-Security additions (Phase 3):
+Security additions:
   - Origin validation against ALLOWED_WS_ORIGINS before accept.
   - Single-use WS ticket authentication (hash lookup, mark used on accept).
+  - Multi-client exclusive control token arbitration (1 controller at a time, server-side gating).
+  - Admin takeover preemption capability.
   - Per-message byte size limit.
   - Allowlisted event types (unknown types dropped, not crashed).
-  - Server-side Screen View / Screen Control gating unchanged.
   - Mouse/keyboard rate-limiting counters.
-  - release_all_keys() on disconnect/error.
+  - release_all_keys() on disconnect/error/control release.
+  - Automatic control token release and broadcast upon controller disconnect or timeout.
   - Audit logging for accepted/rejected connections and mode transitions.
 """
 from __future__ import annotations
@@ -31,14 +33,14 @@ from app.core.security import is_safe_event
 from app.models.session import WsTicket
 from app.models.user import User
 from app.services.input_service import InputService
-from app.services.state import pcs
+from app.services.state import pcs, control_manager
 from app.services.screen_track import ScreenTrack
 from app.services import audit as audit_svc
 
 router = APIRouter()
 log = logging.getLogger(__name__)
 
-# ─── Quality / resolution limits (unchanged) ────────────────────────────────
+# ─── Quality / resolution limits ─────────────────────────────────────────────
 MAX_WIDTH  = 2560
 MAX_HEIGHT = 1600
 MAX_FPS    = 30
@@ -53,7 +55,7 @@ QUALITY_PRESETS = {
     "native":   {"width": 0,    "height": 0,    "fps": 30, "bitrate": 12_000_000},
 }
 
-# ─── Allowlisted WebSocket event types ──────────────────────────────────────
+# ─── Allowlisted WebSocket event types ───────────────────────────────────────
 _ALLOWED_ACTIONS = frozenset({
     "set_control_mode",
     "release_all_keys",
@@ -86,7 +88,6 @@ def _hash(value: str) -> str:
 def _origin_allowed(origin: Optional[str]) -> bool:
     """Return True if the WebSocket Origin header is on the allowlist."""
     if not origin:
-        # Allow missing Origin in dev (same-origin browser connections)
         return not settings.is_production
     allowed = settings.allowed_ws_origins_list
     return origin.rstrip("/") in [o.rstrip("/") for o in allowed]
@@ -97,7 +98,7 @@ def _validate_and_consume_ticket(
 ) -> Optional[User]:
     """
     Look up the ticket by hash, verify it is unused/unexpired, mark it used,
-    and return the owning User.  Returns None if invalid.
+    and return the owning User. Returns None if invalid.
     """
     ticket_hash = _hash(raw_ticket)
     ticket = db.query(WsTicket).filter(WsTicket.ticket_hash == ticket_hash).first()
@@ -127,14 +128,14 @@ async def websocket_control(
         websocket.client.host if websocket.client else "unknown"
     )
     authed_user: Optional[User] = None
+    ws_id: str = f"ws-{time.monotonic_ns()}"
 
     try:
         # ── 1. Origin validation ─────────────────────────────────────────
         origin = websocket.headers.get("origin")
         if not _origin_allowed(origin):
             log.warning("WS rejected: bad origin '%s' from %s", origin, remote_ip)
-            audit_svc.audit_ws_rejected(db, remote_ip,
-                                         f"bad origin: {origin}")
+            audit_svc.audit_ws_rejected(db, remote_ip, f"bad origin: {origin}")
             await websocket.close(code=4003, reason="Origin not allowed")
             return
 
@@ -148,24 +149,27 @@ async def websocket_control(
         authed_user = _validate_and_consume_ticket(db, ticket, required_scope="view")
         if authed_user is None:
             log.warning("WS rejected: invalid/expired ticket from %s", remote_ip)
-            audit_svc.audit_ws_rejected(db, remote_ip,
-                                         "invalid or expired ticket")
+            audit_svc.audit_ws_rejected(db, remote_ip, "invalid or expired ticket")
             await websocket.close(code=4001, reason="Invalid ticket")
             return
 
-        # ── 3. Accept connection ─────────────────────────────────────────
+        # ── 3. Accept connection & register in Control Manager ───────────
         await websocket.accept()
-        log.info("WS accepted for user '%s' from %s", authed_user.username, remote_ip)
+        ws_id = f"{authed_user.id}-{time.monotonic_ns()}"
+        await control_manager.register_socket(ws_id, websocket)
+        log.info("WS accepted for user '%s' (ws_id=%s) from %s", authed_user.username, ws_id, remote_ip)
         audit_svc.audit_ws_accepted(db, authed_user.id, remote_ip, "view")
 
-        # ── 4. Send initial screen info ──────────────────────────────────
+        # ── 4. Send initial screen info & controller state ───────────────
         try:
             with mss.mss() as sct:
-                monitor = sct.monitors[1]
+                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                active_ctrl = control_manager.get_active_controller_info()
                 await websocket.send_json({
                     "action": "screeninfo",
                     "width": monitor["width"],
                     "height": monitor["height"],
+                    "active_controller": active_ctrl.get("username") if active_ctrl else None,
                 })
         except Exception as exc:
             log.error("Error sending screeninfo: %s", exc)
@@ -175,7 +179,6 @@ async def websocket_control(
 
         # ── 5. Per-connection state ──────────────────────────────────────
         control_enabled = False
-        last_mouse_ts = 0.0
         mouse_event_count = 0
         mouse_window_start = time.monotonic()
         control_event_count = 0
@@ -185,46 +188,43 @@ async def websocket_control(
         max_mouse_rps = settings.MAX_MOUSE_EVENTS_PER_SECOND
         max_ctrl_rps  = settings.MAX_CONTROL_EVENTS_PER_SECOND
         control_expire_secs = settings.CONTROL_SESSION_EXPIRE_MINUTES * 60
-        # How often to check inactivity when idle (must be < control_expire_secs)
         _IDLE_CHECK_INTERVAL = min(30.0, control_expire_secs / 2)
-        last_control_ts = time.monotonic()  # reset on each control input
+        last_control_ts = time.monotonic()
 
         # ── 6. Message loop ──────────────────────────────────────────────
         while True:
-            # Use a timeout so we can enforce inactivity timeouts even
-            # when no messages arrive (e.g., viewer is watching but not typing).
             try:
                 raw = await asyncio.wait_for(
                     websocket.receive_text(),
                     timeout=_IDLE_CHECK_INTERVAL,
                 )
             except asyncio.TimeoutError:
-                # No message arrived — check inactivity if control mode is on
+                # Check inactivity timeout
                 if control_enabled:
                     idle_secs = time.monotonic() - last_control_ts
                     if idle_secs >= control_expire_secs:
                         log.info(
-                            "Control session inactivity timeout (%.0fs) for user '%s' — "
-                            "reverting to view mode",
+                            "Control session inactivity timeout (%.0fs) for user '%s' — releasing control",
                             idle_secs, authed_user.username,
                         )
                         control_enabled = False
+                        await control_manager.release_control(authed_user.id, ws_id)
                         InputService.release_all_keys()
                         audit_svc.audit_control_end(db, authed_user.id, remote_ip)
                         try:
                             await websocket.send_json({
                                 "type": "control_mode",
                                 "enabled": False,
+                                "status": "released",
                                 "reason": "inactivity_timeout",
                             })
                         except Exception:
                             pass
-                continue  # resume waiting for the next message
+                continue
 
             # Size limit
             if len(raw.encode()) > max_msg_bytes:
-                log.warning("WS oversized message (%d bytes) from %s",
-                            len(raw), remote_ip)
+                log.warning("WS oversized message (%d bytes) from %s", len(raw), remote_ip)
                 continue
 
             try:
@@ -235,7 +235,6 @@ async def websocket_control(
 
             action = msg.get("action") or msg.get("type")
             if not action or action not in _ALLOWED_ACTIONS:
-                # Silently drop unknown events
                 continue
 
             # ── Rate limiting ────────────────────────────────────────────
@@ -247,7 +246,7 @@ async def websocket_control(
                     mouse_window_start = now
                 mouse_event_count += 1
                 if mouse_event_count > max_mouse_rps:
-                    continue  # drop excess mouse events silently
+                    continue
 
             if action in _INPUT_ACTIONS and action != "mousemove":
                 window = now - control_window_start
@@ -258,38 +257,78 @@ async def websocket_control(
                 if control_event_count > max_ctrl_rps:
                     continue
 
-            # ── Control mode toggle ──────────────────────────────────────
+            # ── Control arbitration toggle ───────────────────────────────
             if action == "set_control_mode":
-                control_enabled = bool(msg.get("enabled"))
-                log.info("Control mode -> %s for user '%s'",
-                         control_enabled, authed_user.username)
-                if not control_enabled:
+                req_enabled = bool(msg.get("enabled"))
+                if req_enabled:
+                    # Attempt exclusive acquisition
+                    is_admin_takeover = bool(msg.get("takeover", False)) and bool(authed_user.is_admin)
+                    success, status, controller_info = await control_manager.acquire_control(
+                        user_id=authed_user.id,
+                        username=authed_user.username,
+                        ws_id=ws_id,
+                        is_admin=bool(authed_user.is_admin),
+                        is_admin_takeover=is_admin_takeover,
+                    )
+                    if success:
+                        control_enabled = True
+                        last_control_ts = time.monotonic()
+                        audit_svc.audit_control_start(db, authed_user.id, remote_ip)
+                        log.info("Control mode GRANTED to user '%s'", authed_user.username)
+                        await websocket.send_json({
+                            "type": "control_mode",
+                            "enabled": True,
+                            "status": "granted",
+                            "controller": authed_user.username,
+                        })
+                    else:
+                        control_enabled = False
+                        log.info(
+                            "Control mode REJECTED for user '%s' (held by '%s')",
+                            authed_user.username,
+                            controller_info.get("username") if controller_info else "unknown",
+                        )
+                        await websocket.send_json({
+                            "type": "control_mode",
+                            "enabled": False,
+                            "status": "rejected",
+                            "reason": "busy",
+                            "controller": controller_info.get("username") if controller_info else "unknown",
+                        })
+                else:
+                    # Explicit release
+                    await control_manager.release_control(authed_user.id, ws_id)
+                    control_enabled = False
                     InputService.release_all_keys()
                     audit_svc.audit_control_end(db, authed_user.id, remote_ip)
-                else:
-                    last_control_ts = time.monotonic()  # reset inactivity on enable
-                    audit_svc.audit_control_start(db, authed_user.id, remote_ip)
-                await websocket.send_json({
-                    "type": "control_mode",
-                    "enabled": control_enabled,
-                })
+                    log.info("Control mode RELEASED by user '%s'", authed_user.username)
+                    await websocket.send_json({
+                        "type": "control_mode",
+                        "enabled": False,
+                        "status": "released",
+                    })
                 continue
 
             if action == "release_all_keys":
-                InputService.release_all_keys()
+                if control_manager.is_user_controlling(authed_user.id, ws_id):
+                    InputService.release_all_keys()
                 continue
 
-            # ── Server-side gating ───────────────────────────────────────
-            if action in _INPUT_ACTIONS and not control_enabled:
-                await websocket.send_json({
-                    "type": "control_denied",
-                    "message": "Screen Control mode is disabled.",
-                })
-                continue
+            # ── Server-side control gating ───────────────────────────────
+            if action in _INPUT_ACTIONS:
+                if not control_manager.is_user_controlling(authed_user.id, ws_id):
+                    current_ctrl = control_manager.get_active_controller_info()
+                    await websocket.send_json({
+                        "type": "control_denied",
+                        "message": "Screen Control is not active for your session.",
+                        "active_controller": current_ctrl.get("username") if current_ctrl else None,
+                    })
+                    continue
+                else:
+                    last_control_ts = time.monotonic()
+                    control_manager.touch_activity(authed_user.id)
 
-            # ── Dispatch ─────────────────────────────────────────────────
-            if action in _INPUT_ACTIONS and control_enabled:
-                last_control_ts = time.monotonic()  # reset inactivity timer
+            # ── Input Dispatch ───────────────────────────────────────────
             try:
                 if action == "mousemove":
                     InputService.move_to(
@@ -315,8 +354,7 @@ async def websocket_control(
                     text = msg.get("text", "")
                     if len(text) > 65_536:
                         await websocket.send_json(
-                            {"type": "clipboard_ack", "success": False,
-                             "error": "Clipboard payload too large"}
+                            {"type": "clipboard_ack", "success": False, "error": "Payload too large"}
                         )
                         continue
                     InputService.set_host_clipboard(text)
@@ -354,7 +392,7 @@ async def websocket_control(
                             cfg["fps"] = max(MIN_FPS, min(cfg.get("fps", fps), MAX_FPS))
 
                     if cfg:
-                        for pc in pcs:
+                        for pc in list(pcs):
                             for sender in pc.getSenders():
                                 if isinstance(sender.track, ScreenTrack):
                                     sender.track.set_quality(
@@ -368,40 +406,43 @@ async def websocket_control(
 
                 elif action == "set_fps":
                     new_fps = max(MIN_FPS, min(int(msg.get("fps", 15)), MAX_FPS))
-                    for pc in pcs:
+                    for pc in list(pcs):
                         for sender in pc.getSenders():
                             if isinstance(sender.track, ScreenTrack):
                                 sender.track.fps = new_fps
 
                 elif action == "set_monitor":
                     idx = int(msg.get("index", 1))
-                    for pc in pcs:
+                    for pc in list(pcs):
                         for sender in pc.getSenders():
                             if isinstance(sender.track, ScreenTrack):
                                 sender.track.set_monitor(idx)
 
                 elif action == "ping":
-                    pass  # keepalive — no reply needed
+                    pass
 
             except Exception as exc:
                 log.error("Control event error (action=%s): %s", action, exc)
 
     except WebSocketDisconnect:
-        log.info("WS disconnected (user=%s)",
-                 authed_user.username if authed_user else "unauthenticated")
+        log.info("WS disconnected (user=%s, ws_id=%s)",
+                 authed_user.username if authed_user else "unauthenticated", ws_id)
     except Exception as exc:
         log.error("WS error: %s", exc)
     finally:
-        # Always release all keys/buttons on disconnect
         try:
             InputService.release_all_keys()
         except Exception:
             pass
-        if authed_user and control_enabled if "control_enabled" in dir() else False:
+
+        if authed_user:
             try:
-                audit_svc.audit_control_end(db, authed_user.id, remote_ip)
-            except Exception:
-                pass
+                released = await control_manager.unregister_socket(ws_id, user_id=authed_user.id)
+                if released:
+                    audit_svc.audit_control_end(db, authed_user.id, remote_ip)
+            except Exception as e:
+                log.error("Error releasing control on unregister: %s", e)
+
         db.close()
         try:
             await websocket.close()
