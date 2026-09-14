@@ -13,6 +13,7 @@ Security additions (Phase 3):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -183,10 +184,42 @@ async def websocket_control(
         max_msg_bytes = settings.MAX_WS_MESSAGE_BYTES
         max_mouse_rps = settings.MAX_MOUSE_EVENTS_PER_SECOND
         max_ctrl_rps  = settings.MAX_CONTROL_EVENTS_PER_SECOND
+        control_expire_secs = settings.CONTROL_SESSION_EXPIRE_MINUTES * 60
+        # How often to check inactivity when idle (must be < control_expire_secs)
+        _IDLE_CHECK_INTERVAL = min(30.0, control_expire_secs / 2)
+        last_control_ts = time.monotonic()  # reset on each control input
 
         # ── 6. Message loop ──────────────────────────────────────────────
         while True:
-            raw = await websocket.receive_text()
+            # Use a timeout so we can enforce inactivity timeouts even
+            # when no messages arrive (e.g., viewer is watching but not typing).
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=_IDLE_CHECK_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                # No message arrived — check inactivity if control mode is on
+                if control_enabled:
+                    idle_secs = time.monotonic() - last_control_ts
+                    if idle_secs >= control_expire_secs:
+                        log.info(
+                            "Control session inactivity timeout (%.0fs) for user '%s' — "
+                            "reverting to view mode",
+                            idle_secs, authed_user.username,
+                        )
+                        control_enabled = False
+                        InputService.release_all_keys()
+                        audit_svc.audit_control_end(db, authed_user.id, remote_ip)
+                        try:
+                            await websocket.send_json({
+                                "type": "control_mode",
+                                "enabled": False,
+                                "reason": "inactivity_timeout",
+                            })
+                        except Exception:
+                            pass
+                continue  # resume waiting for the next message
 
             # Size limit
             if len(raw.encode()) > max_msg_bytes:
@@ -234,6 +267,7 @@ async def websocket_control(
                     InputService.release_all_keys()
                     audit_svc.audit_control_end(db, authed_user.id, remote_ip)
                 else:
+                    last_control_ts = time.monotonic()  # reset inactivity on enable
                     audit_svc.audit_control_start(db, authed_user.id, remote_ip)
                 await websocket.send_json({
                     "type": "control_mode",
@@ -254,6 +288,8 @@ async def websocket_control(
                 continue
 
             # ── Dispatch ─────────────────────────────────────────────────
+            if action in _INPUT_ACTIONS and control_enabled:
+                last_control_ts = time.monotonic()  # reset inactivity timer
             try:
                 if action == "mousemove":
                     InputService.move_to(

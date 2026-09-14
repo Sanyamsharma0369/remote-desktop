@@ -31,17 +31,36 @@ Base.metadata.create_all(bind=engine)
 db = SessionLocal()
 try:
     from app.routers.auth import get_password_hash
+    _WEAK_PASSWORDS = {"admin123", "admin", "password", "123456", "changeme", "secret", ""}
     if not db.query(User).filter(User.role == "admin").first():
-        admin = User(
-            username="admin",
-            password_hash=get_password_hash("admin123"),
-            role="admin",
-        )
-        db.add(admin)
-        db.commit()
-        log.info("Default admin user created. CHANGE THE PASSWORD.")
+        init_pw = settings.INITIAL_ADMIN_PASSWORD
+        if not init_pw:
+            log.critical(
+                "NO ADMIN USER EXISTS and INITIAL_ADMIN_PASSWORD is not set. "
+                "Set INITIAL_ADMIN_PASSWORD in your .env file to create the first admin account."
+            )
+            # Do not exit — allow the app to run so existing non-admin users can still authenticate.
+            # The admin account simply won't be created until the env var is provided.
+        elif init_pw in _WEAK_PASSWORDS or len(init_pw) < 12:
+            log.critical(
+                "INITIAL_ADMIN_PASSWORD is too weak or is a known-bad value. "
+                "Use a strong password of at least 12 characters. Admin NOT created."
+            )
+        else:
+            admin = User(
+                username="admin",
+                password_hash=get_password_hash(init_pw),
+                role="admin",
+            )
+            db.add(admin)
+            db.commit()
+            log.info(
+                "Initial admin user created from INITIAL_ADMIN_PASSWORD. "
+                "Remove or rotate that env var after first login."
+            )
 finally:
     db.close()
+
 
 # ── Security Headers Middleware ──────────────────────────────────────────────
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -103,7 +122,7 @@ app.add_middleware(SessionMiddleware, secret_key=secrets.token_hex(16))
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router,          prefix="/api/auth",         tags=["Auth"])
-app.include_router(stream.router,        prefix="",                  tags=["Stream"])
+app.include_router(stream.router,        prefix="/api/stream",          tags=["Stream"])
 app.include_router(control.router,       prefix="",                  tags=["Control"])
 app.include_router(files.router,         prefix="/api/files",        tags=["Files"])
 app.include_router(monitors.router,      prefix="/api/monitors",     tags=["Monitors"])

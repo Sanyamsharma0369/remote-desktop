@@ -137,9 +137,23 @@ FastAPI Backend
    python -m uvicorn app.main:app --host 0.0.0.0 --port 9005 --reload
    ```
 
+6. **Create the initial admin account:**
+
+   Before first login, set `INITIAL_ADMIN_PASSWORD` in your `.env` file:
+
+   ```env
+   INITIAL_ADMIN_PASSWORD=YourStrongPassword123!
+   ```
+
+   On first startup, the application will create the `admin` account using this password.
+   Once any admin exists in the database, this setting is ignored.
+   Use a strong password of at least 12 characters — weak or common values are rejected.
+
+   > **Security:** Never commit your `.env` file. After first login, rotate this password
+   > and consider removing `INITIAL_ADMIN_PASSWORD` from your environment.
+
 6. **Access the application:**
    - **Local Web:** [http://localhost:9005](http://localhost:9005)
-   - **Default Admin Account:** `admin` / `admin123` *(change password immediately on first login)*
 
 ---
 
@@ -155,6 +169,7 @@ Key settings in `.env`:
 | `ALLOWED_ORIGINS` | `http://localhost:9005` | Comma-separated list of allowed CORS origins |
 | `ALLOWED_WS_ORIGINS` | `http://localhost:9005` | Comma-separated list of allowed WebSocket origins |
 | `COOKIE_SECURE` | `false` | Must be `true` in production with HTTPS |
+| `INITIAL_ADMIN_PASSWORD` | *(not set)* | One-time password to seed the first admin account (ignored once an admin exists) |
 | `CAPTURE_FPS` | `30` | Target streaming frame rate |
 | `DEFAULT_WIDTH` | `1280` | Default stream capture width |
 | `DEFAULT_HEIGHT` | `720` | Default stream capture height |

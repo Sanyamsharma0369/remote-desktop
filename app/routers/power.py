@@ -2,82 +2,118 @@ import subprocess
 import platform
 import logging
 from fastapi import APIRouter, Depends, Request
-from app.routers.auth import require_admin
+from app.routers.auth import require_admin, limiter
 from app.models.user import User
 from app.core.database import get_db
 from sqlalchemy.orm import Session
-from app.models.audit import AuditEvent
-from app.routers.auth import limiter
+from app.services import audit as audit_svc
 
 router = APIRouter()
 log = logging.getLogger(__name__)
 
-def log_power_audit(db: Session, user_id: int, action: str, ip_address: str):
-    audit = AuditEvent(
-        user_id=user_id,
-        action=f"power_{action}",
-        ip_address=ip_address,
-        details=f"Triggered power action: {action}"
+
+def _run_power_action(db: Session, user: User, ip: str, action: str, cmd: list[str]) -> dict:
+    """
+    Execute a power OS command and audit both attempt and outcome.
+    Records the attempt before the command, then records failure only if
+    the command raises. Does NOT audit a false "success" for commands that
+    schedule shutdown (they return before the OS actually acts).
+    """
+    # Audit: this action was attempted (success=True records the attempt)
+    audit_svc.log_event(
+        db,
+        action=f"power_{action}_attempt",
+        user_id=user.id,
+        username=user.username,
+        ip_address=ip,
+        reason=f"Power action '{action}' triggered by user",
     )
-    db.add(audit)
-    db.commit()
+    try:
+        if platform.system() == "Windows":
+            subprocess.Popen(cmd)
+        # Audit success (OS accepted the command)
+        audit_svc.log_event(
+            db,
+            action=f"power_{action}",
+            user_id=user.id,
+            username=user.username,
+            ip_address=ip,
+        )
+        return {"success": True}
+    except Exception as e:
+        log.error("Power %s error: %s", action, e)
+        audit_svc.log_event(
+            db,
+            action=f"power_{action}",
+            success=False,
+            user_id=user.id,
+            username=user.username,
+            ip_address=ip,
+            reason=str(e),
+        )
+        return {"success": False, "error": str(e)}
+
 
 @router.post("/lock")
 @limiter.limit("5/minute")
-async def power_lock(request: Request, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        if platform.system() == "Windows":
-            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
-        log_power_audit(db, current_user.id, "lock", request.client.host)
-        return {"success": True}
-    except Exception as e:
-        log.error(f"Lock error: {e}")
-        return {"success": False, "error": str(e)}
+async def power_lock(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _run_power_action(
+        db, current_user, request.client.host, "lock",
+        ["rundll32.exe", "user32.dll,LockWorkStation"],
+    )
+
 
 @router.post("/shutdown")
 @limiter.limit("5/minute")
-async def power_shutdown(request: Request, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        if platform.system() == "Windows":
-            subprocess.Popen(["shutdown", "/s", "/t", "0"])
-        log_power_audit(db, current_user.id, "shutdown", request.client.host)
-        return {"success": True}
-    except Exception as e:
-        log.error(f"Shutdown error: {e}")
-        return {"success": False, "error": str(e)}
+async def power_shutdown(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _run_power_action(
+        db, current_user, request.client.host, "shutdown",
+        ["shutdown", "/s", "/t", "0"],
+    )
+
 
 @router.post("/restart")
 @limiter.limit("5/minute")
-async def power_restart(request: Request, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        if platform.system() == "Windows":
-            subprocess.Popen(["shutdown", "/r", "/t", "0"])
-        log_power_audit(db, current_user.id, "restart", request.client.host)
-        return {"success": True}
-    except Exception as e:
-        log.error(f"Restart error: {e}")
-        return {"success": False, "error": str(e)}
+async def power_restart(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _run_power_action(
+        db, current_user, request.client.host, "restart",
+        ["shutdown", "/r", "/t", "0"],
+    )
+
 
 @router.post("/hibernate")
 @limiter.limit("5/minute")
-async def power_hibernate(request: Request, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        if platform.system() == "Windows":
-            subprocess.Popen(["shutdown", "/h"])
-        log_power_audit(db, current_user.id, "hibernate", request.client.host)
-        return {"success": True}
-    except Exception as e:
-        log.error(f"Hibernate error: {e}")
-        return {"success": False, "error": str(e)}
+async def power_hibernate(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _run_power_action(
+        db, current_user, request.client.host, "hibernate",
+        ["shutdown", "/h"],
+    )
+
 
 @router.post("/sleep")
 @limiter.limit("5/minute")
-async def power_sleep(request: Request, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        if platform.system() == "Windows":
-            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "Sleep", "0", "0"])
-        log_power_audit(db, current_user.id, "sleep", request.client.host)
-        return {"success": True}
-    except Exception as e:
-        log.error(f"Sleep error: {e}")
-        return {"success": False, "error": str(e)}
+async def power_sleep(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _run_power_action(
+        db, current_user, request.client.host, "sleep",
+        ["rundll32.exe", "powrprof.dll,SetSuspendState", "Sleep", "0", "0"],
+    )

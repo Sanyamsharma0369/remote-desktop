@@ -72,7 +72,7 @@ backend/
 │   │   ├── user.py                 # User account & credential definitions
 │   │   ├── user_session.py         # Refresh token & session state tracking
 │   │   ├── ws_ticket.py            # Ephemeral WebSocket ticket records
-│   │   └── audit_event.py          # Structured audit trail records
+│   │   └── audit.py                # Structured audit trail records
 │   ├── routers/
 │   │   ├── auth.py                 # Login, refresh, register, sessions & ticket endpoints
 │   │   ├── stream.py               # WebRTC SDP signaling & stream lifecycle
@@ -82,11 +82,12 @@ backend/
 │   │   ├── power.py                # Lock, sleep, restart, shutdown endpoints
 │   │   └── audit.py                # Admin audit log query endpoints
 │   └── services/
-│       ├── screen_capture.py       # Threaded screen capture engine
-│       ├── input_injector.py       # PyAutoGUI input execution
-│       ├── video_streamer.py       # aiortc WebRTC track implementations
-│       └── audit_logger.py         # Asynchronous audit log recorder
+│       ├── screen_track.py         # Threaded screen capture engine (ScreenTrack)
+│       ├── input_service.py        # PyAutoGUI/Win32 input execution (InputService)
+│       ├── audio_track.py          # aiortc AudioStreamTrack (system audio capture)
+│       └── audit.py                # Centralized audit event logging service
 ├── deploy/
+│   ├── Dockerfile                  # Production container image definition
 │   ├── Caddyfile                   # Production reverse proxy template
 │   ├── docker-compose.yml          # Container orchestration template
 │   └── turnserver.conf.example     # Coturn STUN/TURN configuration

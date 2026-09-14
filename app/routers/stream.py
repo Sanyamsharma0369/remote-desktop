@@ -24,7 +24,7 @@ def add_video_bitrate_to_sdp(sdp: str, kbps: int = 4000) -> str:
     return "\r\n".join(output) + "\r\n"
 
 @router.post("/offer")
-async def offer(request: Request):
+async def offer(request: Request, current_user: User = Depends(get_current_user)):
     params = await request.json()
     log.info(f"Received offer: {params.get('type')} (SDP length: {len(params.get('sdp',''))})")
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
@@ -66,7 +66,7 @@ async def offer(request: Request):
         "type": pc.localDescription.type
     })
 
-@router.get("/api/stream/info")
+@router.get("/info")
 async def get_stream_info(current_user: User = Depends(get_current_user)):
     """Provides encoder info for the viewer HUD."""
     encoder_labels = {

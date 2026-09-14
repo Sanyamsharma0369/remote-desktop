@@ -76,3 +76,6 @@ JARVIS.txt
 !.env.example
 !deploy/turnserver.conf.example
 
+# Legacy root entrypoint (deleted — prevent accidental re-add)
+# /main.py is root-anchored and does NOT match app/main.py
+/main.py

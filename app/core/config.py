@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     ALLOW_ALT_F4: bool = False
     ALLOW_CTRL_SHIFT_ESC: bool = False
 
+    # ── Initial admin bootstrap ───────────────────────────────────────────
+    # Set this env var ONCE to seed the first admin account.
+    # Once any admin exists in the database, this setting is ignored.
+    # NEVER set to "admin123" or any weak value.
+    INITIAL_ADMIN_PASSWORD: Optional[str] = None
+
+
     # ── Derived helpers (populated by validators) ─────────────────────────
     allowed_origins_list: List[str] = []
     allowed_ws_origins_list: List[str] = []

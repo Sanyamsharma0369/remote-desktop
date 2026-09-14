@@ -17,6 +17,7 @@ class InputService:
     def move_to(x=0, y=0, x_ratio=None, y_ratio=None, monitor_index=1):
         """
         Move mouse on host system with multi-monitor, high-DPI, and ratio-based alignment.
+        Coordinates are strictly clamped to the target monitor's bounds before dispatch.
         """
         attach_interactive_desktop()
         try:
@@ -37,14 +38,20 @@ class InputService:
                 abs_x = int(left + float(x))
                 abs_y = int(top + float(y))
 
+            # Clamp to monitor bounds — prevents injection of out-of-range coordinates
+            abs_x = max(left, min(abs_x, left + width - 1))
+            abs_y = max(top,  min(abs_y, top + height - 1))
+
             # Use Win32 SetCursorPos for accurate multi-monitor & 4K cursor movement
             ctypes.windll.user32.SetCursorPos(abs_x, abs_y)
         except Exception as e:
             log.error(f"Error in move_to: {e}")
             try:
-                pyautogui.moveTo(int(x), int(y))
+                # Fallback uses the already-clamped coordinates, not raw input
+                pyautogui.moveTo(abs_x, abs_y)
             except Exception:
                 pass
+
 
     @staticmethod
     def mouse_down(button='left'):
