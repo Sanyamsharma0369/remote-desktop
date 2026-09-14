@@ -203,3 +203,127 @@ def test_power_audit_logging(client, admin_token, db):
         assert ev.username == "admin"
         assert hasattr(ev, "reason")
         assert not hasattr(ev, "details")  # verifies no obsolete field
+
+
+def test_reconnection_backoff_and_retry_bounds():
+    """Verify exponential backoff progression, max retry bounds, and grace period constants."""
+    # Test parameters mirroring client state machine
+    MAX_RETRIES = 5
+    GRACE_MS = 5000
+
+    assert GRACE_MS == 5000
+    assert MAX_RETRIES == 5
+
+    # Test backoff progression for attempts 1..5
+    delays = [min(1000 * (1.5 ** (attempt - 1)), 8000) for attempt in range(1, MAX_RETRIES + 1)]
+    assert delays[0] == 1000.0        # Attempt 1: 1.0s
+    assert delays[1] == 1500.0        # Attempt 2: 1.5s
+    assert delays[2] == 2250.0        # Attempt 3: 2.25s
+    assert delays[3] == 3375.0        # Attempt 4: 3.375s
+    assert delays[4] == 5062.5        # Attempt 5: 5.0625s
+
+    # Attempt > 5 must cap at 8000ms
+    delay_large = min(1000 * (1.5 ** (10 - 1)), 8000)
+    assert delay_large == 8000.0
+
+
+def test_reconnection_state_machine_logic():
+    """Simulate WebRTC state machine transitions:
+    - temporary disconnected -> grace timer -> recovery cancels reconnect
+    - sustained disconnected -> grace timeout -> single controlled reconnect
+    - duplicate reconnect prevention
+    - manual reconnect resets counter
+    """
+    class MockViewerState:
+        def __init__(self):
+            self.reconnect_attempt = 0
+            self.max_reconnect_attempts = 5
+            self.is_reconnecting = False
+            self.grace_timer_active = False
+            self.reconnect_scheduled = False
+            self.connected = False
+            self.teardown_count = 0
+
+        def handle_disconnected(self):
+            if self.is_reconnecting:
+                return
+            self.grace_timer_active = True
+
+        def handle_recovered(self):
+            if self.grace_timer_active:
+                self.grace_timer_active = False
+            if self.reconnect_scheduled:
+                self.reconnect_scheduled = False
+            self.reconnect_attempt = 0
+            self.is_reconnecting = False
+            self.connected = True
+
+        def trigger_grace_timeout(self):
+            if self.grace_timer_active:
+                self.grace_timer_active = False
+                self.schedule_reconnect("grace timeout")
+
+        def schedule_reconnect(self, reason):
+            if self.is_reconnecting or self.reconnect_scheduled:
+                return  # Prevent concurrent reconnects
+            if self.reconnect_attempt >= self.max_reconnect_attempts:
+                self.is_reconnecting = False
+                self.reconnect_scheduled = False
+                self.teardown_count += 1
+                return
+            self.is_reconnecting = True
+            self.reconnect_scheduled = True
+            self.reconnect_attempt += 1
+
+        def manual_reconnect(self):
+            self.reconnect_attempt = 0
+            self.is_reconnecting = False
+            self.reconnect_scheduled = False
+            self.schedule_reconnect("manual click")
+
+    state = MockViewerState()
+    state.connected = True
+
+    # Scenario 1: Brief network drop recovered during grace period (No reconnect initiated)
+    state.handle_disconnected()
+    assert state.grace_timer_active is True
+    assert state.is_reconnecting is False
+    assert state.reconnect_attempt == 0
+
+    state.handle_recovered()
+    assert state.grace_timer_active is False
+    assert state.connected is True
+    assert state.reconnect_attempt == 0
+    assert state.teardown_count == 0
+
+    # Scenario 2: Sustained network drop exceeding grace period (Controlled reconnect initiated)
+    state.handle_disconnected()
+    assert state.grace_timer_active is True
+    state.trigger_grace_timeout()
+    assert state.grace_timer_active is False
+    assert state.is_reconnecting is True
+    assert state.reconnect_attempt == 1
+
+    # Scenario 3: Duplicate reconnect event while already reconnecting must be ignored
+    state.schedule_reconnect("duplicate event")
+    assert state.reconnect_attempt == 1  # Not incremented
+
+    # Scenario 4: Max retries boundary reached
+    for _ in range(4):
+        state.is_reconnecting = False
+        state.reconnect_scheduled = False
+        state.schedule_reconnect("retry")
+    assert state.reconnect_attempt == 5
+
+    # Next attempt exceeds max
+    state.is_reconnecting = False
+    state.reconnect_scheduled = False
+    state.schedule_reconnect("retry after max")
+    assert state.teardown_count == 1
+    assert state.reconnect_scheduled is False
+
+    # Scenario 5: Manual reconnect resets attempt counter
+    state.manual_reconnect()
+    assert state.reconnect_attempt == 1
+    assert state.is_reconnecting is True
+

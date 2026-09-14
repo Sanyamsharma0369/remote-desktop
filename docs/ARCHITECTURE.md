@@ -96,5 +96,5 @@ backend/
 │   └── turnserver.conf.example     # Coturn STUN/TURN configuration
 ├── docs/                           # Architecture, security & deployment guides
 ├── static/                         # PWA icons, assets, and screenshots
-└── tests/                          # 46 automated security, reliability, and regression tests
+└── tests/                          # 48 automated security, reliability, and regression tests
 ```
