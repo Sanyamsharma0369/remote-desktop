@@ -1771,19 +1771,90 @@ setInterval(() => {
     }
 }, 10000);
 
+// ─── Reconnection & Adaptation Engine State ───
+let _reconnectAttempt = 0;
+const _MAX_RECONNECT_ATTEMPTS = 5;
+let _reconnectTimer = null;
+let _isReconnecting = false;
+let _adaptationCooldownUntil = 0;
+let _degradedSampleCount = 0;
+let _goodSampleCount = 0;
+let _autoAdaptedPreset = null;
+
 function setStatus(msg, color, online) {
     statusDiv.textContent = msg;
     statusDiv.style.color = color || '';
     statusDot.classList.toggle('connected', !!online);
 }
 
+function cleanupPreviousConnection() {
+    if (_statsInterval) { clearInterval(_statsInterval); _statsInterval = null; }
+    if (pc) {
+        pc.ontrack = null;
+        pc.oniceconnectionstatechange = null;
+        pc.onconnectionstatechange = null;
+        pc.onsignalingstatechange = null;
+        try { pc.close(); } catch(e) {}
+        pc = null;
+    }
+    if (wsControl) {
+        wsControl.onopen = null;
+        wsControl.onclose = null;
+        wsControl.onerror = null;
+        wsControl.onmessage = null;
+        try { wsControl.close(); } catch(e) {}
+        wsControl = null;
+    }
+}
+
+function scheduleReconnect(reason) {
+    if (_isReconnecting) return;
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+
+    if (_reconnectAttempt >= _MAX_RECONNECT_ATTEMPTS) {
+        _isReconnecting = false;
+        cleanupPreviousConnection();
+        setStatus('Connection Failed (Max retries)', 'var(--accent-red)', false);
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        loadingSpinner.style.display = 'none';
+        idleState.style.display = '';
+        showToast('Connection lost. Click Connect to retry.', 'error');
+        return;
+    }
+
+    _isReconnecting = true;
+    _reconnectAttempt++;
+    cleanupPreviousConnection();
+
+    const backoffMs = Math.min(1000 * Math.pow(1.5, _reconnectAttempt - 1), 8000);
+    setStatus(`Reconnecting (${_reconnectAttempt}/${_MAX_RECONNECT_ATTEMPTS})...`, 'var(--accent-amber)', false);
+    console.log(`[WebRTC] Network interrupted (${reason}). Scheduling reconnect attempt ${_reconnectAttempt}/${_MAX_RECONNECT_ATTEMPTS} in ${backoffMs}ms`);
+
+    _reconnectTimer = setTimeout(async () => {
+        try {
+            await connect();
+        } catch (err) {
+            console.warn('[WebRTC] Reconnect attempt failed:', err);
+            _isReconnecting = false;
+            scheduleReconnect('Retry failed: ' + err.message);
+        }
+    }, backoffMs);
+}
+
 async function connect() {
-    setStatus('Connecting...', 'var(--accent-amber)', false);
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    
+    if (!_isReconnecting) {
+        _reconnectAttempt = 0;
+        setStatus('Connecting...', 'var(--accent-amber)', false);
+    }
     loadingSpinner.style.display = '';
     idleState.style.display = 'none';
     connectBtn.disabled = true;
     disconnectBtn.disabled = false;
-    video.srcObject = null;
+
+    cleanupPreviousConnection();
 
     pc = new RTCPeerConnection();
     window.pc = pc;
@@ -1803,11 +1874,6 @@ async function connect() {
             remoteVideo.playsInline = true;
             remoteVideo.srcObject = stream;
             remoteVideo.onloadedmetadata = async () => {
-                console.log("[WebRTC] Video metadata:", {
-                    width: remoteVideo.videoWidth,
-                    height: remoteVideo.videoHeight,
-                    readyState: remoteVideo.readyState,
-                });
                 try {
                     await remoteVideo.play();
                     console.log("[WebRTC] Video playback started");
@@ -1835,6 +1901,8 @@ async function connect() {
             audioEl.play().catch(e => console.warn('Audio play error:', e));
         }
 
+        _reconnectAttempt = 0;
+        _isReconnecting = false;
         setStatus('Connected', 'var(--accent-green)', true);
         loadingSpinner.style.display = 'none';
         idleState.style.display = 'none';
@@ -1842,13 +1910,26 @@ async function connect() {
     };
 
     pc.oniceconnectionstatechange = function() {
-        if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
-            setStatus('Disconnected', 'var(--accent-red)', false);
-            connectBtn.disabled = false;
-            disconnectBtn.disabled = true;
-            loadingSpinner.style.display = 'none';
-            idleState.style.display = '';
-            showToast('Disconnected');
+        console.log(`[WebRTC] ICE state -> ${pc.iceConnectionState}`);
+        if (['disconnected', 'failed'].includes(pc.iceConnectionState)) {
+            releaseRemoteKeys();
+            scheduleReconnect(`ICE ${pc.iceConnectionState}`);
+        } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            _reconnectAttempt = 0;
+            _isReconnecting = false;
+            setStatus('Connected', 'var(--accent-green)', true);
+        }
+    };
+
+    pc.onconnectionstatechange = function() {
+        console.log(`[WebRTC] Connection state -> ${pc.connectionState}`);
+        if (['disconnected', 'failed'].includes(pc.connectionState)) {
+            releaseRemoteKeys();
+            scheduleReconnect(`Connection ${pc.connectionState}`);
+        } else if (pc.connectionState === 'connected') {
+            _reconnectAttempt = 0;
+            _isReconnecting = false;
+            setStatus('Connected', 'var(--accent-green)', true);
         }
     };
 
@@ -1892,6 +1973,9 @@ async function connect() {
                 ...(token ? { 'Authorization': 'Bearer ' + token } : {})
             }
         });
+        if (!response.ok) {
+            throw new Error(`Server returned ${response.status}`);
+        }
         const answer = await response.json();
         await pc.setRemoteDescription(answer);
         connected = true;
@@ -1921,7 +2005,6 @@ async function connect() {
         window.wsControl = wsControl;
         wsControl.onopen = () => {
             attachControlHandlers();
-            // If user previously selected a monitor, send it
             if (typeof monitorSelect !== 'undefined' && monitorSelect && monitorSelect.value) {
                 wsControl.send(JSON.stringify({ 
                     action: 'set_monitor', 
@@ -1933,27 +2016,34 @@ async function connect() {
             }
             localStorage.setItem('rd-quality-preset', presetName);
         };
-        wsControl.onclose = () => {
-            setStatus('Reconnecting...', 'var(--accent-amber)', false);
+        wsControl.onclose = (event) => {
+            console.log('[WS] Control closed:', event.code, event.reason);
             releaseRemoteKeys();
+            if (connected && !_isReconnecting && event.code !== 1000) {
+                scheduleReconnect('WebSocket closed');
+            }
+        };
+    } catch (e) {
+        console.error('[WebRTC] Connect failed:', e);
+        if (!_isReconnecting) {
+            setStatus('Connection failed', 'var(--accent-red)', false);
             connectBtn.disabled = false;
             disconnectBtn.disabled = true;
             loadingSpinner.style.display = 'none';
             idleState.style.display = '';
-        };
-    } catch (e) {
-        setStatus('Connection failed', 'var(--accent-red)', false);
-        connectBtn.disabled = false;
-        disconnectBtn.disabled = true;
-        loadingSpinner.style.display = 'none';
-        idleState.style.display = '';
-        showToast('Connection failed: ' + e);
+            showToast('Connection failed: ' + e.message);
+        } else {
+            throw e;
+        }
     }
 }
 
 function disconnect() {
-    if (pc) { pc.close(); pc = null; }
-    if (wsControl) { wsControl.close(); wsControl = null; }
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+    _isReconnecting = false;
+    _reconnectAttempt = 0;
+    connected = false;
+    cleanupPreviousConnection();
     stopStatsHUD();
     video.srcObject = null;
     setStatus('Disconnected', 'var(--accent-red)', false);
@@ -2369,16 +2459,77 @@ document.getElementById('sleepBtn').onclick = () => confirmPowerAction('sleep');
 document.getElementById('lockBtn').onclick = () => confirmPowerAction('lock');
 
 /**
- * WebRTC Stats HUD
+ * WebRTC Stats HUD & Adaptive Video Quality Analyzer
  */
 let _statsInterval = null;
 let _lastVideoBytes = 0;
 let _lastVideoTimestamp = 0;
+let _lastPacketsReceived = 0;
+let _lastPacketsLost = 0;
+
+function evaluateAdaptiveQuality(rtt, lossRate, fps) {
+    if (!wsControl || wsControl.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now < _adaptationCooldownUntil) return;
+
+    const currentPreset = qualityPresetSelect ? qualityPresetSelect.value : 'balanced';
+    // Only adapt if user hasn't explicitly locked 'native' or if currently on auto/preset
+    if (currentPreset === 'native') return;
+
+    const isDegraded = (rtt > 180 || lossRate > 5.0 || (fps > 0 && fps < 15));
+    const isGood = (rtt > 0 && rtt < 90 && lossRate < 1.5 && fps >= 24);
+
+    if (isDegraded) {
+        _degradedSampleCount++;
+        _goodSampleCount = 0;
+        if (_degradedSampleCount >= 3) {
+            _degradedSampleCount = 0;
+            _adaptationCooldownUntil = now + 12000; // 12s cooldown
+
+            if (!_autoAdaptedPreset) {
+                _autoAdaptedPreset = currentPreset;
+            }
+
+            console.log(`[WebRTC-Adapt] Network degraded (RTT: ${rtt}ms, Loss: ${lossRate.toFixed(1)}%, FPS: ${fps}). Stepping down quality.`);
+            showToast('Network degraded: optimizing stream quality...', 'info');
+
+            if (currentPreset === 'high' || currentPreset === 'auto') {
+                setStreamQuality('balanced');
+            } else if (currentPreset === 'balanced' || currentPreset === '720p') {
+                setStreamQuality('low');
+            } else if (currentPreset === 'low') {
+                // Lower FPS to 15
+                if (wsControl && wsControl.readyState === WebSocket.OPEN) {
+                    wsControl.send(JSON.stringify({ action: 'set_fps', fps: 15 }));
+                }
+            }
+        }
+    } else if (isGood && _autoAdaptedPreset) {
+        _goodSampleCount++;
+        _degradedSampleCount = 0;
+        if (_goodSampleCount >= 12) { // 12 continuous good seconds
+            _goodSampleCount = 0;
+            _adaptationCooldownUntil = now + 12000;
+
+            console.log(`[WebRTC-Adapt] Network recovered (RTT: ${rtt}ms, Loss: ${lossRate.toFixed(1)}%, FPS: ${fps}). Restoring quality to ${_autoAdaptedPreset}.`);
+            showToast('Network recovered: restoring video quality', 'info');
+
+            setStreamQuality(_autoAdaptedPreset);
+            _autoAdaptedPreset = null;
+        }
+    } else {
+        _degradedSampleCount = Math.max(0, _degradedSampleCount - 1);
+    }
+}
 
 function startStatsHUD(peerConnection) {
     if (_statsInterval) clearInterval(_statsInterval);
     _lastVideoBytes = 0;
     _lastVideoTimestamp = 0;
+    _lastPacketsReceived = 0;
+    _lastPacketsLost = 0;
+    _degradedSampleCount = 0;
+    _goodSampleCount = 0;
 
     _statsInterval = setInterval(async () => {
         if (!peerConnection) return;
@@ -2388,6 +2539,7 @@ function startStatsHUD(peerConnection) {
         } catch { return; }
 
         let fps = 0, rtt = 0, bitrate = 0, width = 0, height = 0;
+        let packetLossRate = 0;
 
         stats.forEach(report => {
             if (report.type === 'inbound-rtp' && report.kind === 'video') {
@@ -2397,6 +2549,8 @@ function startStatsHUD(peerConnection) {
 
                 const bytes = report.bytesReceived || 0;
                 const now = report.timestamp || Date.now();
+                const packetsReceived = report.packetsReceived || 0;
+                const packetsLost = report.packetsLost || 0;
 
                 if (_lastVideoBytes > 0 && now > _lastVideoTimestamp) {
                     const byteDelta = bytes - _lastVideoBytes;
@@ -2407,6 +2561,17 @@ function startStatsHUD(peerConnection) {
                 }
                 _lastVideoBytes = bytes;
                 _lastVideoTimestamp = now;
+
+                if (_lastPacketsReceived > 0) {
+                    const recvDelta = Math.max(0, packetsReceived - _lastPacketsReceived);
+                    const lostDelta = Math.max(0, packetsLost - _lastPacketsLost);
+                    const totalDelta = recvDelta + lostDelta;
+                    if (totalDelta > 0) {
+                        packetLossRate = (lostDelta / totalDelta) * 100;
+                    }
+                }
+                _lastPacketsReceived = packetsReceived;
+                _lastPacketsLost = packetsLost;
             }
 
             if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
@@ -2419,16 +2584,24 @@ function startStatsHUD(peerConnection) {
             height = video.videoHeight;
         }
 
-        document.getElementById('hud-fps').textContent = `${fps} fps`;
-        document.getElementById('hud-rtt').textContent = `${rtt} ms`;
-        document.getElementById('hud-bitrate').textContent = `${bitrate} kbps`;
-        document.getElementById('hud-res').textContent = width ? `${width}×${height}` : '—';
-
+        const fpsEl = document.getElementById('hud-fps');
         const rttEl = document.getElementById('hud-rtt');
+        const bitEl = document.getElementById('hud-bitrate');
+        const resEl = document.getElementById('hud-res');
+
+        if (fpsEl) fpsEl.textContent = `${fps} fps`;
         if (rttEl) {
-            rttEl.style.color = rtt < 50 ? 'var(--accent-green)' : rtt < 120 ? 'var(--accent-amber)' : 'var(--accent-red)';
+            rttEl.textContent = `${rtt} ms`;
+            rttEl.style.color = rtt < 60 ? 'var(--accent-green)' : rtt < 140 ? 'var(--accent-amber)' : 'var(--accent-red)';
         }
-        
+        if (bitEl) {
+            bitEl.textContent = packetLossRate > 1 ? `${bitrate} kbps (${packetLossRate.toFixed(0)}% loss)` : `${bitrate} kbps`;
+        }
+        if (resEl) resEl.textContent = width ? `${width}×${height}` : '—';
+
+        // Evaluate and apply conservative network adaptation
+        evaluateAdaptiveQuality(rtt, packetLossRate, fps);
+
         if (!_encoderInfoFetched) fetchEncoderInfo();
     }, 1000);
 }
@@ -2439,7 +2612,8 @@ async function fetchEncoderInfo() {
         const res = await apiFetch(`${BASE_URL}/api/stream/info`);
         if (!res) return;
         const data = await res.json();
-        document.getElementById('hud-encoder').textContent = data.encoder_label || data.encoder;
+        const encEl = document.getElementById('hud-encoder');
+        if (encEl) encEl.textContent = data.encoder_label || data.encoder;
         _encoderInfoFetched = true;
     } catch {}
 }
@@ -2447,10 +2621,14 @@ async function fetchEncoderInfo() {
 function stopStatsHUD() {
     if (_statsInterval) clearInterval(_statsInterval);
     _statsInterval = null;
-    document.getElementById('hud-fps').textContent = '—';
-    document.getElementById('hud-rtt').textContent = '—';
-    document.getElementById('hud-bitrate').textContent = '—';
-    document.getElementById('hud-res').textContent = '—';
+    const fpsEl = document.getElementById('hud-fps');
+    const rttEl = document.getElementById('hud-rtt');
+    const bitEl = document.getElementById('hud-bitrate');
+    const resEl = document.getElementById('hud-res');
+    if (fpsEl) fpsEl.textContent = '—';
+    if (rttEl) rttEl.textContent = '—';
+    if (bitEl) bitEl.textContent = '—';
+    if (resEl) resEl.textContent = '—';
 }
 
 // Monitor Selector

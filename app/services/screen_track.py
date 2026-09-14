@@ -148,6 +148,21 @@ class ScreenTrack(VideoStreamTrack):
             self.target_width == 0,
         )
 
+    def get_stats(self) -> dict:
+        """Return real-time metrics of the capture and delivery pipeline."""
+        with self._frame_lock:
+            cur_w, cur_h = self._latest_dims
+        return {
+            "target_fps": self.fps,
+            "target_width": self.target_width,
+            "target_height": self.target_height,
+            "current_width": cur_w,
+            "current_height": cur_h,
+            "frames_sent": self.frames_sent,
+            "monitor_index": self.monitor_index,
+            "is_running": self._running,
+        }
+
     @staticmethod
     def list_monitors() -> list[dict]:
         attach_interactive_desktop()

@@ -3,6 +3,10 @@ tests/test_regressions.py — Regression tests for Phase 1 & Phase 2 stabilizati
 Covers:
   - WebRTC offer authentication requirement (/api/stream/offer)
   - Stream info routing and double-prefix prevention
+  - WebRTC stream stats endpoint (/api/stream/stats)
+  - StreamTrack quality adaptation, stats, and safe bounds
+  - SDP bitrate injection constraint
+  - Peer connection cleanup and resource safety
   - Per-user file ownership and isolation (User A vs User B vs Admin)
   - Persistent file metadata in DB (FileRecord model)
   - File upload MIME validation and chunked size limit
@@ -11,6 +15,10 @@ Covers:
 import io
 import pytest
 from app.models.file import FileRecord
+from app.services.screen_track import ScreenTrack
+from app.routers.stream import add_video_bitrate_to_sdp, _cleanup_peer_connection
+from app.services.state import pcs
+from aiortc import RTCPeerConnection
 
 
 def test_stream_offer_requires_auth(client):
@@ -26,10 +34,77 @@ def test_stream_info_endpoint(client, user_token):
     data = res.json()
     assert "encoder" in data
     assert "encoder_label" in data
+    assert "active_peers" in data
 
     # Double-prefix route must 404
     bad_res = client.get("/api/stream/api/stream/info", headers={"Authorization": f"Bearer {user_token}"})
     assert bad_res.status_code == 404
+
+
+def test_stream_stats_endpoint(client, user_token):
+    """GET /api/stream/stats returns active peer metrics and encoder info."""
+    res = client.get("/api/stream/stats", headers={"Authorization": f"Bearer {user_token}"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "active_peers" in data
+    assert "tracks" in data
+    assert "encoder" in data
+
+
+def test_screen_track_adaptation_and_stats():
+    """ScreenTrack supports dynamic quality adjustment within safety bounds and exposes get_stats()."""
+    track = ScreenTrack(width=1280, height=800, fps=30)
+    try:
+        stats = track.get_stats()
+        assert stats["target_fps"] == 30
+        assert stats["target_width"] == 1280
+        assert stats["target_height"] == 800
+        assert stats["is_running"] is True
+
+        # Adapt quality down (e.g. degraded network: 854x480 @ 18fps)
+        track.set_quality(width=854, height=480, fps=18)
+        assert track.fps == 18
+        assert track.target_width == 854
+        assert track.target_height == 480
+
+        # Quality clamping validation (min/max safety bounds)
+        track.set_quality(width=100, height=50, fps=5)  # below min
+        assert track.target_width == 480
+        assert track.target_height == 270
+        assert track.fps == 10
+
+        track.set_quality(width=5000, height=4000, fps=60)  # above max
+        assert track.target_width == 2560
+        assert track.target_height == 1600
+        assert track.fps == 30
+    finally:
+        track.stop()
+
+
+def test_sdp_bitrate_injection():
+    """add_video_bitrate_to_sdp correctly injects bandwidth constraint lines."""
+    raw_sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\n"
+    modified = add_video_bitrate_to_sdp(raw_sdp, kbps=2500)
+    assert "b=AS:2500" in modified
+    assert "b=TIAS:2500000" in modified
+
+
+def test_peer_connection_cleanup():
+    """_cleanup_peer_connection stops all tracks and removes pc from global active set."""
+    import asyncio
+
+    async def _run():
+        pc = RTCPeerConnection()
+        track = ScreenTrack(width=1280, height=720, fps=30)
+        pc.addTrack(track)
+        pcs.add(pc)
+        assert pc in pcs
+
+        await _cleanup_peer_connection(pc, username="test_user")
+        assert pc not in pcs
+        assert track._running is False
+
+    asyncio.run(_run())
 
 
 def test_file_ownership_isolation_and_persistence(client, user_token, admin_token, db):

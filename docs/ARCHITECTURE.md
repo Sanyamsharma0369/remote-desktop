@@ -40,7 +40,9 @@ This document provides a technical deep-dive into the Remote Desktop platform, d
 - **Capture Worker:** A background capture thread continuously captures monitor frames using MSS into shared memory buffers, maintaining low CPU utilization and consistent frame intervals.
 - **Dynamic Scaler:** Frames are rescaled and color-converted using OpenCV based on active resolution presets (`720p`, `Balanced`, `High`, `Low`, `Native`, or custom dimensions).
 - **Track Streaming:** The custom `aiortc.VideoStreamTrack` packs PyAV `VideoFrame` instances with accurate presentation timestamps (`pts`), which are encoded via software/hardware encoders (e.g. OpenH264 / NVENC) and streamed via RTP to the browser.
-- **Signaling:** SDP offers/answers and ICE candidate negotiation occur over a dedicated REST signaling exchange (`/api/stream/offer`).
+- **Signaling & Observability:** SDP offers/answers and ICE candidate negotiation occur over a dedicated REST signaling exchange (`/api/stream/offer`). Connection/ICE state changes are actively monitored with automatic track and peer connection cleanup (`_cleanup_peer_connection`) upon disconnect/failure.
+- **Adaptive Video Quality:** Real-time WebRTC telemetry (`inbound-rtp`, `candidate-pair`) drives a conservative client-side adaptation loop with hysteresis and a 12s cooldown, dynamically adjusting resolution presets (`1080p` -> `720p` -> `Low`) and frame rates (down to 15 FPS) during network degradation.
+- **Bounded Reconnection:** When connections enter `disconnected` or `failed`, the client executes bounded exponential backoff recovery (max 5 attempts, up to 8s interval) with total teardown of stale peer connections and WebSocket channels.
 
 ### 2.2 WebSocket Control Channel
 - **Authentication:** WebSockets require a single-use authorization ticket generated via authenticated REST API (`/api/auth/ws-ticket`).
@@ -76,14 +78,14 @@ backend/
 │   │   └── file.py                 # Persistent file metadata records (FileRecord)
 │   ├── routers/
 │   │   ├── auth.py                 # Login, refresh, register, sessions & ticket endpoints
-│   │   ├── stream.py               # WebRTC SDP signaling & stream lifecycle
+│   │   ├── stream.py               # WebRTC SDP signaling, stats & stream lifecycle
 │   │   ├── control.py              # WebSocket input dispatch & mode management
 │   │   ├── files.py                # Bidirectional file upload & download
 │   │   ├── monitors.py             # Multi-monitor enumeration & switching
 │   │   ├── power.py                # Lock, sleep, restart, shutdown endpoints
 │   │   └── audit.py                # Admin audit log query endpoints
 │   └── services/
-│       ├── screen_track.py         # Threaded screen capture engine (ScreenTrack)
+│       ├── screen_track.py         # Threaded screen capture engine with stats (ScreenTrack)
 │       ├── input_service.py        # PyAutoGUI/Win32 input execution (InputService)
 │       ├── audio_track.py          # aiortc AudioStreamTrack (system audio capture)
 │       └── audit.py                # Centralized audit event logging service
@@ -94,5 +96,5 @@ backend/
 │   └── turnserver.conf.example     # Coturn STUN/TURN configuration
 ├── docs/                           # Architecture, security & deployment guides
 ├── static/                         # PWA icons, assets, and screenshots
-└── tests/                          # 42 automated security and regression tests
+└── tests/                          # 46 automated security, reliability, and regression tests
 ```
