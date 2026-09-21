@@ -27,6 +27,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import VideoFrame
 
 from app.core.windows_desktop import attach_interactive_desktop
+from app.core.config import get_settings
 from app.services.encoder import get_active_encoder, get_active_encoder_label
 
 logger = logging.getLogger(__name__)
@@ -122,16 +123,20 @@ class MonitorCaptureWorker:
         sct = None
         backend = "mss"
 
-        try:
-            import dxcam
-            output_idx = max(0, self.monitor_index - 1)
-            dxgi_cam = dxcam.create(device_idx=0, output_idx=output_idx, output_color="BGR")
-            backend = "dxgi"
-            logger.info("CaptureWorker for Display %d initialized with DXGI backend", self.monitor_index)
-        except Exception as e:
-            logger.info("CaptureWorker for Display %d DXGI unavailable (%s) — falling back to MSS", self.monitor_index, e)
-            dxgi_cam = None
-            backend = "mss"
+        settings = get_settings()
+        pref_backend = (getattr(settings, "CAPTURE_BACKEND", "auto") or "auto").lower()
+
+        if pref_backend != "mss":
+            try:
+                import dxcam
+                output_idx = max(0, self.monitor_index - 1)
+                dxgi_cam = dxcam.create(device_idx=0, output_idx=output_idx, output_color="BGR")
+                backend = "dxgi"
+                logger.info("CaptureWorker for Display %d initialized with DXGI backend", self.monitor_index)
+            except Exception as e:
+                logger.info("CaptureWorker for Display %d DXGI unavailable (%s) — falling back to MSS", self.monitor_index, e)
+                dxgi_cam = None
+                backend = "mss"
 
         if dxgi_cam is None:
             sct = mss.mss()

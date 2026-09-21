@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     CAPTURE_FPS: int = 30
     MONITOR_INDEX: int = 1
     ENCODER: str = "auto"
+    CAPTURE_BACKEND: str = "auto"
 
     # ── Keyboard security flags ───────────────────────────────────────────
     ALLOW_ALT_F4: bool = False
