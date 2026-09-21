@@ -109,12 +109,14 @@ async def get_stream_info(current_user: User = Depends(get_current_user)):
     """Provides encoder info, active controller, and stream telemetry for the viewer HUD."""
     encoder = get_active_encoder()
     ctrl_info = control_manager.get_active_controller_info()
+    hub_stats = capture_hub.get_hub_stats()
     return {
         "encoder": encoder,
         "encoder_label": get_active_encoder_label(),
         "active_peers": len(pcs),
         "active_controller": ctrl_info.get("username") if ctrl_info else None,
         "capture_workers_active": capture_hub.get_active_worker_count(),
+        "capture_hub": hub_stats,
     }
 
 

@@ -53,6 +53,7 @@ class MonitorCaptureWorker:
         self._latest_raw_frame: Optional[np.ndarray] = None
         self._latest_dims: Tuple[int, int] = (0, 0)
         self._frame_seq: int = 0
+        self._active_backend: str = "mss"
 
     def subscribe(self, track: ScreenTrack) -> None:
         with self._lock:
@@ -110,45 +111,81 @@ class MonitorCaptureWorker:
         with self._lock:
             return len(self._subscribers)
 
+    @property
+    def backend_name(self) -> str:
+        with self._lock:
+            return self._active_backend
+
     def _capture_loop(self) -> None:
         attach_interactive_desktop()
-        sct = mss.mss()
+        dxgi_cam = None
+        sct = None
+        backend = "mss"
+
+        try:
+            import dxcam
+            output_idx = max(0, self.monitor_index - 1)
+            dxgi_cam = dxcam.create(device_idx=0, output_idx=output_idx, output_color="BGR")
+            backend = "dxgi"
+            logger.info("CaptureWorker for Display %d initialized with DXGI backend", self.monitor_index)
+        except Exception as e:
+            logger.info("CaptureWorker for Display %d DXGI unavailable (%s) — falling back to MSS", self.monitor_index, e)
+            dxgi_cam = None
+            backend = "mss"
+
+        if dxgi_cam is None:
+            sct = mss.mss()
 
         while not self._stop_event.is_set():
             try:
-                monitors = sct.monitors
-                m_idx = max(1, min(self.monitor_index, len(monitors) - 1))
-                monitor = monitors[m_idx]
-
-                raw = sct.grab(monitor)
-                # BGRA -> BGR
-                image = np.frombuffer(raw.bgra, dtype=np.uint8).reshape(
-                    raw.height, raw.width, 4
-                )[:, :, :3]
-                image = np.ascontiguousarray(image)
+                if dxgi_cam is not None:
+                    image = dxgi_cam.grab()
+                    if image is None:
+                        # Frame unchanged or not ready; yield briefly
+                        time.sleep(0.005)
+                        continue
+                else:
+                    monitors = sct.monitors
+                    m_idx = max(1, min(self.monitor_index, len(monitors) - 1))
+                    monitor = monitors[m_idx]
+                    raw = sct.grab(monitor)
+                    # BGRA -> BGR
+                    image = np.frombuffer(raw.bgra, dtype=np.uint8).reshape(
+                        raw.height, raw.width, 4
+                    )[:, :, :3]
+                    image = np.ascontiguousarray(image)
 
                 with self._lock:
                     self._latest_raw_frame = image
                     self._latest_dims = (image.shape[1], image.shape[0])
                     self._frame_seq += 1
+                    self._active_backend = backend
 
-                # Cap capture loop pacing to ~40 FPS to avoid unnecessary busy loops
-                time.sleep(0.015)
+                # Pacing sleep: 10ms for smooth ~60 FPS cap
+                time.sleep(0.010)
 
             except Exception:
                 logger.exception("CaptureWorker Display %d loop error — retrying", self.monitor_index)
                 time.sleep(0.05)
 
-        try:
-            sct.close()
-        except Exception:
-            pass
+        if dxgi_cam is not None:
+            try:
+                dxgi_cam.release()
+                del dxgi_cam
+            except Exception:
+                pass
+
+        if sct is not None:
+            try:
+                sct.close()
+            except Exception:
+                pass
 
         with self._lock:
             if threading.current_thread() == self._thread:
                 self._latest_raw_frame = None
                 self._thread = None
-        logger.info("CaptureWorker for Display %d TERMINATED cleanly", self.monitor_index)
+        logger.info("CaptureWorker for Display %d TERMINATED cleanly (backend: %s)", self.monitor_index, backend)
 
 
 class SharedCaptureHub:
@@ -178,6 +215,7 @@ class SharedCaptureHub:
                         "running": w.is_running,
                         "subscribers": w.subscriber_count,
                         "dims": w._latest_dims,
+                        "backend": w.backend_name,
                     }
                     for idx, w in self._workers.items()
                 },

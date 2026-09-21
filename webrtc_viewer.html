@@ -2857,9 +2857,15 @@ async function fetchEncoderInfo() {
     try {
         const res = await apiFetch(`${BASE_URL}/api/stream/info`);
         if (!res) return;
-        const data = await res.json();
-        const encEl = document.getElementById('hud-encoder');
-        if (encEl) encEl.textContent = data.encoder_label || data.encoder;
+        const encLabel = data.encoder_label || data.encoder;
+        let captureBackend = '';
+        if (data.capture_hub && data.capture_hub.monitors) {
+            const monValues = Object.values(data.capture_hub.monitors);
+            if (monValues.length > 0 && monValues[0].backend) {
+                captureBackend = ` | ${monValues[0].backend.toUpperCase()}`;
+            }
+        }
+        if (encEl) encEl.textContent = `${encLabel}${captureBackend}`;
         const viewersEl = document.getElementById('hud-viewers');
         if (viewersEl && data.active_peers !== undefined) {
             viewersEl.textContent = Math.max(1, data.active_peers);
