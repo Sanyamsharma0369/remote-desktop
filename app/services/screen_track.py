@@ -45,8 +45,8 @@ class MonitorCaptureWorker:
     def __init__(self, monitor_index: int) -> None:
         self.monitor_index = monitor_index
         self._subscribers: Set[ScreenTrack] = set()
-        self._lock = threading.Lock()
-        self._running = False
+        self._lock = threading.RLock()
+        self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
         # Latest raw screen capture state (unscaled BGR)
@@ -58,32 +58,38 @@ class MonitorCaptureWorker:
         with self._lock:
             self._subscribers.add(track)
             subscriber_count = len(self._subscribers)
-            if not self._running:
-                self._running = True
-                self._thread = threading.Thread(
-                    target=self._capture_loop,
-                    daemon=True,
-                    name=f"CaptureWorker-Display{self.monitor_index}",
-                )
-                self._thread.start()
-                logger.info(
-                    "CaptureWorker for Display %d STARTED (subscribers: %d)",
-                    self.monitor_index,
-                    subscriber_count,
-                )
-            else:
+
+            if self._thread is not None and self._thread.is_alive() and not self._stop_event.is_set():
                 logger.info(
                     "CaptureWorker for Display %d added subscriber (total: %d)",
                     self.monitor_index,
                     subscriber_count,
                 )
+                return
+
+            if self._thread is not None and self._thread.is_alive():
+                self._stop_event.set()
+                self._thread.join(timeout=0.3)
+
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._capture_loop,
+                daemon=True,
+                name=f"CaptureWorker-Display{self.monitor_index}",
+            )
+            self._thread.start()
+            logger.info(
+                "CaptureWorker for Display %d STARTED (subscribers: %d)",
+                self.monitor_index,
+                subscriber_count,
+            )
 
     def unsubscribe(self, track: ScreenTrack) -> None:
         with self._lock:
             self._subscribers.discard(track)
             subscriber_count = len(self._subscribers)
-            if subscriber_count == 0 and self._running:
-                self._running = False
+            if subscriber_count == 0:
+                self._stop_event.set()
                 logger.info(
                     "CaptureWorker for Display %d STOPPING (0 subscribers remaining)",
                     self.monitor_index,
@@ -97,7 +103,7 @@ class MonitorCaptureWorker:
     @property
     def is_running(self) -> bool:
         with self._lock:
-            return self._running and (self._thread is not None and self._thread.is_alive())
+            return not self._stop_event.is_set() and (self._thread is not None and self._thread.is_alive())
 
     @property
     def subscriber_count(self) -> int:
@@ -108,7 +114,7 @@ class MonitorCaptureWorker:
         attach_interactive_desktop()
         sct = mss.mss()
 
-        while self._running:
+        while not self._stop_event.is_set():
             try:
                 monitors = sct.monitors
                 m_idx = max(1, min(self.monitor_index, len(monitors) - 1))
@@ -139,8 +145,9 @@ class MonitorCaptureWorker:
             pass
 
         with self._lock:
-            self._latest_raw_frame = None
-            self._thread = None
+            if threading.current_thread() == self._thread:
+                self._latest_raw_frame = None
+                self._thread = None
         logger.info("CaptureWorker for Display %d TERMINATED cleanly", self.monitor_index)
 
 
