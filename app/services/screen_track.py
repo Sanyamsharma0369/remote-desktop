@@ -226,6 +226,18 @@ class SharedCaptureHub:
                 },
             }
 
+    def shutdown_all(self) -> None:
+        """Gracefully and deterministically stops all monitor capture workers."""
+        with self._hub_lock:
+            for idx, worker in list(self._workers.items()):
+                with worker._lock:
+                    worker._stop_event.set()
+                if worker._thread and worker._thread.is_alive():
+                    worker._thread.join(timeout=1.0)
+            self._workers.clear()
+            logger.info("SharedCaptureHub: all capture workers shutdown cleanly.")
+
+
 
 # Singleton capture hub
 capture_hub = SharedCaptureHub()

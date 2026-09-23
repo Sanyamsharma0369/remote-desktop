@@ -136,6 +136,12 @@ class ControlArbitrationManager:
 
         return False, None
 
+    def release_controller(self, reason: str = "shutdown") -> None:
+        """Synchronously resets active controller and clears connected sockets for system shutdown."""
+        self.active_controller = None
+        self._connected_sockets.clear()
+        logger.info("ControlArbitrationManager: active controller cleared (%s)", reason)
+
     def get_active_controller_info(self) -> Optional[Dict[str, Any]]:
         """Non-blocking snapshot of current controller."""
         if self.active_controller:

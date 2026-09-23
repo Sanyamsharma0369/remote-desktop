@@ -15,7 +15,8 @@ from app.core.database import SessionLocal, Base, engine, get_db
 from app.models.user import User
 # Import all models so Base.metadata knows about every table
 from app.models import UserSession, WsTicket, AuditEvent  # noqa: F401
-from app.routers import auth, stream, control, files, monitors, power, audit as audit_router
+import time
+from app.routers import auth, stream, control, files, monitors, power, health, audit as audit_router
 
 from app.core.windows_desktop import attach_interactive_desktop
 attach_interactive_desktop()
@@ -62,6 +63,33 @@ finally:
     db.close()
 
 
+# ── Structured Logging Middleware ────────────────────────────────────────────
+class StructuredLoggingMiddleware(BaseHTTPMiddleware):
+    """Injects correlation X-Request-ID and emits structured access logs."""
+
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID") or secrets.token_hex(8)
+        request.state.request_id = req_id
+        t0 = time.monotonic()
+        response: Response = await call_next(request)
+        duration_ms = (time.monotonic() - t0) * 1000
+        response.headers["X-Request-ID"] = req_id
+
+        # Emit structured log for API routes
+        if not request.url.path.startswith("/static"):
+            client_host = request.client.host if request.client else "unknown"
+            log.info(
+                "HTTP %s %s -> %d (%.2fms) [req_id=%s ip=%s]",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+                req_id,
+                client_host,
+            )
+        return response
+
+
 # ── Security Headers Middleware ──────────────────────────────────────────────
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach security headers to every response."""
@@ -106,7 +134,8 @@ from app.routers.auth import limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Security headers (before CORS so headers are always present)
+# Structured logging & security headers
+app.add_middleware(StructuredLoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — uses parsed list from config
@@ -121,13 +150,61 @@ app.add_middleware(
 app.add_middleware(SessionMiddleware, secret_key=secrets.token_hex(16))
 
 # ── Routers ──────────────────────────────────────────────────────────────────
+app.include_router(health.router,        prefix="/api",              tags=["Health"])
 app.include_router(auth.router,          prefix="/api/auth",         tags=["Auth"])
-app.include_router(stream.router,        prefix="/api/stream",          tags=["Stream"])
+app.include_router(stream.router,        prefix="/api/stream",       tags=["Stream"])
 app.include_router(control.router,       prefix="",                  tags=["Control"])
 app.include_router(files.router,         prefix="/api/files",        tags=["Files"])
 app.include_router(monitors.router,      prefix="/api/monitors",     tags=["Monitors"])
 app.include_router(power.router,         prefix="/api/power",        tags=["Power"])
 app.include_router(audit_router.router,  prefix="/api/audit-events", tags=["Audit"])
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """
+    Graceful shutdown sequence:
+      1. Stop and cleanup all active WebRTC peer connections.
+      2. Clear all active control tokens and release input keys.
+      3. Stop all capture hub workers deterministically.
+      4. Dispose database engine connection pool.
+    """
+    log.info("Initiating graceful shutdown sequence...")
+    # 1. WebRTC peers
+    from app.routers.stream import _cleanup_peer_connection
+    from app.services.state import pcs, control_manager
+    for pc in list(pcs):
+        try:
+            await _cleanup_peer_connection(pc, username="shutdown")
+        except Exception as e:
+            log.warning("Error cleaning up peer connection during shutdown: %s", e)
+    pcs.clear()
+
+    # 2. Control manager & input reset
+    try:
+        control_manager.release_controller("system_shutdown")
+        from app.services.input_service import InputService
+        InputService.release_all_keys()
+    except Exception as e:
+        log.warning("Error resetting control state on shutdown: %s", e)
+
+    # 3. Capture hub workers
+    try:
+        from app.services.screen_track import capture_hub
+        capture_hub.shutdown_all()
+    except Exception as e:
+        log.warning("Error shutting down capture hub: %s", e)
+
+    # 4. Database engine dispose (skip in-memory SQLite to preserve test session tables)
+    try:
+        from app.core.database import engine as db_engine
+        if db_engine and str(db_engine.url) != "sqlite://":
+            db_engine.dispose()
+    except Exception as e:
+        log.warning("Error disposing database engine: %s", e)
+
+    log.info("Graceful shutdown sequence completed successfully.")
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -55,9 +55,9 @@ RUN mkdir -p /data /app/uploads && chown -R appuser:appuser /data /app
 
 USER appuser
 
-# Health check (uses favicon endpoint — lightweight, no auth required)
+# Health check (uses /api/health lightweight liveness probe)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9005/favicon.ico')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9005/api/health')"
 
 EXPOSE 9005
 
