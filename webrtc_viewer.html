@@ -2078,7 +2078,20 @@ async function connect() {
 
     cleanupPreviousConnection();
 
-    pc = new RTCPeerConnection();
+    let rtcConfig = {};
+    try {
+        const iceRes = await fetchWithAuth('/api/stream/ice-servers');
+        if (iceRes && iceRes.ok) {
+            const data = await iceRes.json();
+            if (data.ice_servers && data.ice_servers.length > 0) {
+                rtcConfig = { iceServers: data.ice_servers };
+            }
+        }
+    } catch (e) {
+        console.warn('[WebRTC] Could not fetch ice servers, using default:', e);
+    }
+
+    pc = new RTCPeerConnection(rtcConfig);
     window.pc = pc;
 
     pc.ontrack = async (event) => {

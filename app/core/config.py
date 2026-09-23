@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     ENCODER: str = "auto"
     CAPTURE_BACKEND: str = "auto"
 
+    # ── WebRTC ICE / STUN / TURN ──────────────────────────────────────────
+    STUN_SERVERS: str = "stun:stun.l.google.com:19302"
+    TURN_SERVER: Optional[str] = None
+    TURN_USERNAME: Optional[str] = None
+    TURN_PASSWORD: Optional[str] = None
+
     # ── Keyboard security flags ───────────────────────────────────────────
     ALLOW_ALT_F4: bool = False
     ALLOW_CTRL_SHIFT_ESC: bool = False
@@ -144,6 +150,23 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"
+
+    def get_ice_servers(self) -> List[dict]:
+        """Returns ICE servers formatted for WebRTC (aiortc and browser client)."""
+        servers: List[dict] = []
+        if self.STUN_SERVERS:
+            for s in self.STUN_SERVERS.split(","):
+                s = s.strip()
+                if s:
+                    servers.append({"urls": s})
+        if self.TURN_SERVER:
+            turn_entry: dict = {"urls": self.TURN_SERVER.strip()}
+            if self.TURN_USERNAME:
+                turn_entry["username"] = self.TURN_USERNAME.strip()
+            if self.TURN_PASSWORD:
+                turn_entry["credential"] = self.TURN_PASSWORD.strip()
+            servers.append(turn_entry)
+        return servers
 
 
 @lru_cache()

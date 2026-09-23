@@ -1,7 +1,8 @@
 import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from app.core.config import get_settings
 from app.services.screen_track import ScreenTrack, capture_hub
 from app.services.audio_track import AudioTrack
 from app.services.encoder import get_active_encoder, get_active_encoder_label
@@ -11,6 +12,20 @@ from app.models.user import User
 
 router = APIRouter()
 log = logging.getLogger(__name__)
+
+
+def get_rtc_configuration() -> RTCConfiguration:
+    """Builds aiortc RTCConfiguration from application STUN/TURN settings."""
+    settings = get_settings()
+    ice_servers = []
+    for entry in settings.get_ice_servers():
+        kwargs = {"urls": entry["urls"]}
+        if "username" in entry:
+            kwargs["username"] = entry["username"]
+        if "credential" in entry:
+            kwargs["credential"] = entry["credential"]
+        ice_servers.append(RTCIceServer(**kwargs))
+    return RTCConfiguration(iceServers=ice_servers)
 
 
 def add_video_bitrate_to_sdp(sdp: str, kbps: int = 4000) -> str:
@@ -52,7 +67,7 @@ async def offer(request: Request, current_user: User = Depends(get_current_user)
     )
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
     
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=get_rtc_configuration())
     pcs.add(pc)
     
     @pc.on("iceconnectionstatechange")
@@ -137,3 +152,11 @@ async def get_stream_stats(current_user: User = Depends(get_current_user)):
         "active_controller": ctrl_info.get("username") if ctrl_info else None,
         "capture_hub": capture_hub.get_hub_stats(),
     }
+
+
+@router.get("/ice-servers")
+async def get_ice_servers_endpoint(current_user: User = Depends(get_current_user)):
+    """Returns configured STUN/TURN ICE servers for client WebRTC configuration."""
+    settings = get_settings()
+    return {"ice_servers": settings.get_ice_servers()}
+

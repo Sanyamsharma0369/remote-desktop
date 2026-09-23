@@ -51,6 +51,18 @@ def test_stream_stats_endpoint(client, user_token):
     assert "encoder" in data
 
 
+def test_stream_ice_servers_endpoint(client, user_token):
+    """GET /api/stream/ice-servers returns configured STUN/TURN ICE servers."""
+    res = client.get("/api/stream/ice-servers", headers={"Authorization": f"Bearer {user_token}"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "ice_servers" in data
+    assert isinstance(data["ice_servers"], list)
+    assert len(data["ice_servers"]) >= 1
+    assert "urls" in data["ice_servers"][0]
+
+
+
 def test_screen_track_adaptation_and_stats():
     """ScreenTrack supports dynamic quality adjustment within safety bounds and exposes get_stats()."""
     track = ScreenTrack(width=1280, height=800, fps=30)
