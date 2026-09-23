@@ -141,6 +141,9 @@ async def upload_file(
     return {"success": True, "filename": safe_filename, "file_id": file_id}
 
 
+@router.get("")
+@router.get("/")
+@router.get("/list")
 @router.get("/files")
 async def list_files(
     current_user: User = Depends(get_current_user),
@@ -171,6 +174,7 @@ async def download_file(
     return FileResponse(path=record.path, filename=record.filename)
 
 
+@router.delete("/{file_id}")
 @router.delete("/files/{file_id}")
 async def delete_file(
     file_id: str,
