@@ -496,6 +496,21 @@
     }
 })();
 
+// Check for expired session notice
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('expired') === 'true') {
+        const errorMsg = document.getElementById('errorMsg');
+        if (errorMsg) {
+            errorMsg.textContent = 'Your session has expired. Please sign in again to continue.';
+            errorMsg.style.backgroundColor = 'rgba(245, 158, 11, 0.15)';
+            errorMsg.style.borderColor = 'rgba(245, 158, 11, 0.35)';
+            errorMsg.style.color = '#fbbf24';
+            errorMsg.style.display = 'block';
+        }
+    }
+})();
+
 // Password toggle
 document.getElementById('togglePassword').addEventListener('click', function() {
     const pwd = document.getElementById('password');

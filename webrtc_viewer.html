@@ -2869,8 +2869,9 @@ let _encoderInfoFetched = false;
 async function fetchEncoderInfo() {
     try {
         const res = await apiFetch(`${BASE_URL}/api/stream/info`);
-        if (!res) return;
-        const encLabel = data.encoder_label || data.encoder;
+        if (!res || !res.ok) return;
+        const data = await res.json();
+        const encLabel = data.encoder_label || data.encoder || 'H.264';
         let captureBackend = '';
         if (data.capture_hub && data.capture_hub.monitors) {
             const monValues = Object.values(data.capture_hub.monitors);
@@ -2878,13 +2879,16 @@ async function fetchEncoderInfo() {
                 captureBackend = ` | ${monValues[0].backend.toUpperCase()}`;
             }
         }
+        const encEl = document.getElementById('hud-encoder');
         if (encEl) encEl.textContent = `${encLabel}${captureBackend}`;
         const viewersEl = document.getElementById('hud-viewers');
         if (viewersEl && data.active_peers !== undefined) {
             viewersEl.textContent = Math.max(1, data.active_peers);
         }
         _encoderInfoFetched = true;
-    } catch {}
+    } catch (e) {
+        console.warn('Could not fetch encoder telemetry:', e);
+    }
 }
 
 function stopStatsHUD() {
